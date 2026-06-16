@@ -2,6 +2,7 @@
   "name": "@workspace/labswift",
   "version": "1.0.0",
   "description": "LabSwift - LAN File Transfer System for Computer Labs",
+  "author": "NastyClaw",
   "main": "dist-main/main.js",
   "scripts": {
     "dev": "concurrently \"pnpm dev:renderer\" \"wait-on http://localhost:5173 && pnpm dev:electron\"",
@@ -9,7 +10,8 @@
     "dev:electron": "cross-env NODE_ENV=development electron .",
     "build:renderer": "vite build src/renderer --outDir ../../dist-renderer",
     "build:main": "tsc -p tsconfig.main.json",
-    "build": "electron-rebuild && pnpm build:renderer && pnpm build:main",
+    "build": "pnpm build:renderer && pnpm build:main",
+    "postinstall": "electron-builder install-app-deps",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p src/renderer/tsconfig.json --noEmit",
     "pack": "pnpm build && electron-builder --dir",
     "dist": "pnpm build && electron-builder"
@@ -25,7 +27,6 @@
     "uuid": "^9.0.0"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.6.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/better-sqlite3": "^7.6.8",
     "@types/express": "^4.17.21",
@@ -50,7 +51,7 @@
     "appId": "com.labswift.app",
     "productName": "LabSwift",
     "icon": "assets/icon.ico",
-    "npmRebuild": false,
+    "npmRebuild": true,
     "files": [
       "dist-main/**/*",
       "dist-renderer/**/*",
@@ -58,11 +59,11 @@
     ],
     "directories": {
       "output": "release"
-    },
+    ],
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico"
-    },
+    ],
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
