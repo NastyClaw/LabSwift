@@ -1,0 +1,72 @@
+{
+  "name": "@workspace/labswift",
+  "version": "1.0.0",
+  "description": "LabSwift - LAN File Transfer System for Computer Labs",
+  "main": "dist-main/main.js",
+  "scripts": {
+    "dev": "concurrently \"pnpm dev:renderer\" \"wait-on http://localhost:5173 && pnpm dev:electron\"",
+    "dev:renderer": "vite src/renderer --port 5173 --host",
+    "dev:electron": "cross-env NODE_ENV=development electron .",
+    "build:renderer": "vite build src/renderer --outDir ../../dist-renderer",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build": "pnpm build:renderer && pnpm build:main",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p src/renderer/tsconfig.json --noEmit",
+    "pack": "pnpm build && electron-builder --dir",
+    "dist": "pnpm build && electron-builder"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^9.4.3",
+    "bonjour-service": "^1.1.1",
+    "electron-store": "^8.2.0",
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "node-notifier": "^10.0.1",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/express": "^4.17.21",
+    "@types/multer": "^1.4.11",
+    "@types/node": "^20.11.5",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/uuid": "^9.0.7",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^29.0.0",
+    "electron-builder": "^24.9.1",
+    "lucide-react": "^0.400.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.4.5",
+    "vite": "^7.0.0",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.labswift.app",
+    "productName": "LabSwift",
+    "icon": "assets/icon.ico",
+    "files": [
+      "dist-main/**/*",
+      "dist-renderer/**/*",
+      "assets/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowDirChange": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "LabSwift"
+    }
+  }
+}
