@@ -9,7 +9,7 @@
     "dev:electron": "cross-env NODE_ENV=development electron .",
     "build:renderer": "vite build src/renderer --outDir ../../dist-renderer",
     "build:main": "tsc -p tsconfig.main.json",
-    "build": "pnpm build:renderer && pnpm build:main",
+    "build": "electron-rebuild && pnpm build:renderer && pnpm build:main",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p src/renderer/tsconfig.json --noEmit",
     "pack": "pnpm build && electron-builder --dir",
     "dist": "pnpm build && electron-builder"
@@ -25,6 +25,7 @@
     "uuid": "^9.0.0"
   },
   "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/better-sqlite3": "^7.6.8",
     "@types/express": "^4.17.21",
@@ -49,6 +50,7 @@
     "appId": "com.labswift.app",
     "productName": "LabSwift",
     "icon": "assets/icon.ico",
+    "npmRebuild": false,
     "files": [
       "dist-main/**/*",
       "dist-renderer/**/*",
