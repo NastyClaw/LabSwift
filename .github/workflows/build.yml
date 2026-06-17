@@ -13,26 +13,24 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v4
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 18
 
       - name: Install Project Dependencies
-        run: pnpm install
+        run: npm install
 
-      - name: Build the Windows EXE
-        run: pnpm run dist
+      - name: Build the Electron Files
+        run: npm run build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Save the EXE file
+      - name: Compile Inno Setup Installer
+        run: iscc installer.iss
+
+      - name: Save the Installer Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows-exe
-          path: release/*.exe
+          name: windows-installer
+          path: Output/*.exe
