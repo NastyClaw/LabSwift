@@ -59,11 +59,11 @@
     ],
     "directories": {
       "output": "release"
-    ],
+    },
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico"
-    ],
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
