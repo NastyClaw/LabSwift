@@ -24,6 +24,7 @@ declare global {
       ) => Promise<{ queued: number }>;
       listTransfers: () => Promise<import("./lib/types").Transfer[]>;
       cancelTransfer: (id: string) => Promise<void>;
+      retryTransfer: (id: string, adminPassword: string) => Promise<void>;
       listPeers: () => Promise<import("./lib/types").Peer[]>;
       renamePeer: (id: string, name: string) => Promise<import("./lib/types").Peer[]>;
       setPeerRow: (

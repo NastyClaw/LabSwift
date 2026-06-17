@@ -10,6 +10,78 @@ import type { TransferManager } from "./transfers";
 
 let httpServer: http.Server | null = null;
 
+function resolveSavePath(): string {
+  const store = getStore();
+  const savePath =
+    (store.get("savePath") as string) ||
+    path.join(electronApp.getPath("downloads"), "LabSwift");
+  fs.mkdirSync(savePath, { recursive: true });
+  return savePath;
+}
+
+/**
+ * Custom multer storage engine. multer's built-in diskStorage only reports
+ * a file once it's fully written, which meant incoming transfers showed no
+ * real-time percentage. This implements the same StorageEngine contract
+ * (`_handleFile`/`_removeFile`) but reports bytes as they arrive so the UI
+ * can show a live percentage on the receiving side too.
+ */
+class ProgressTrackingStorage implements multer.StorageEngine {
+  constructor(private transferManager: TransferManager) {}
+
+  _handleFile(
+    req: express.Request,
+    file: Express.Multer.File,
+    cb: (error?: Error | null, info?: Partial<Express.Multer.File>) => void
+  ) {
+    const savePath = resolveSavePath();
+    const fileName = decodeURIComponent(file.originalname);
+    const finalPath = path.join(savePath, fileName);
+    const transferId = (req.headers["x-transfer-id"] as string) || "";
+    const contentLength = Number(req.headers["content-length"] || 0);
+
+    const writeStream = fs.createWriteStream(finalPath);
+    let received = 0;
+
+    file.stream.on("data", (chunk: Buffer) => {
+      received += chunk.length;
+      if (transferId) {
+        this.transferManager.updateIncomingProgress(
+          transferId,
+          fileName,
+          contentLength,
+          received
+        );
+      }
+    });
+
+    file.stream.on("error", (err) => {
+      writeStream.destroy();
+      cb(err);
+    });
+
+    writeStream.on("error", (err) => cb(err));
+    writeStream.on("finish", () => {
+      cb(null, {
+        path: finalPath,
+        size: writeStream.bytesWritten,
+        destination: savePath,
+        filename: fileName,
+      });
+    });
+
+    file.stream.pipe(writeStream);
+  }
+
+  _removeFile(
+    _req: express.Request,
+    file: Express.Multer.File,
+    cb: (error: Error | null) => void
+  ) {
+    fs.unlink(file.path, () => cb(null));
+  }
+}
+
 export async function startServer(
   port: number,
   transferManager: TransferManager,
@@ -18,22 +90,7 @@ export async function startServer(
   const expressApp = express();
   expressApp.use(express.json());
 
-  const upload = multer({
-    storage: multer.diskStorage({
-      destination: (_req, _file, cb) => {
-        const store = getStore();
-        const savePath =
-          (store.get("savePath") as string) ||
-          path.join(electronApp.getPath("downloads"), "LabSwift");
-        fs.mkdirSync(savePath, { recursive: true });
-        cb(null, savePath);
-      },
-      filename: (_req, file, cb) => {
-        const decodedName = decodeURIComponent(file.originalname);
-        cb(null, decodedName);
-      },
-    }),
-  });
+  const upload = multer({ storage: new ProgressTrackingStorage(transferManager) });
 
   // Health check
   expressApp.get("/health", (_req, res) => {

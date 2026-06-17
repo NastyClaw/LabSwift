@@ -17,6 +17,8 @@ export function setupStore() {
       transfers: [],
       peerId: null,
       incomingTransfers: {},
+      minimizeToTray: true,
+      theme: "dark",
     },
   });
 }

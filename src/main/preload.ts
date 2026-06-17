@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld("labswift", {
     ipcRenderer.invoke("transfer:send", targetIds, filePaths, adminPassword),
   listTransfers: () => ipcRenderer.invoke("transfer:list"),
   cancelTransfer: (id: string) => ipcRenderer.invoke("transfer:cancel", id),
+  retryTransfer: (id: string, adminPassword: string) =>
+    ipcRenderer.invoke("transfer:retry", id, adminPassword),
 
   // Peers
   listPeers: () => ipcRenderer.invoke("peers:list"),

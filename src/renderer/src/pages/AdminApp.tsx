@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import TitleBar from "../components/TitleBar";
 import TransferRow from "../components/TransferRow";
+import ThemeSwitcher from "../components/ThemeSwitcher";
 import { Peer, Transfer } from "../lib/types";
 import { formatBytes } from "../lib/format";
 import { useToast } from "../lib/toast";
@@ -37,6 +38,7 @@ export default function AdminApp() {
   const [editRow, setEditRow] = useState("");
   const [editSeat, setEditSeat] = useState("");
   const [rowFilter, setRowFilter] = useState<string>("all");
+  const [minimizeToTray, setMinimizeToTray] = useState(true);
   const { showToast } = useToast();
 
   // Load initial data
@@ -47,6 +49,9 @@ export default function AdminApp() {
     window.labswift.storeGet("pcName").then((n) => setPcName((n as string) || ""));
     window.labswift.storeGet("adminPassword").then((p) => {
       if (p) setAdminPassword(p as string);
+    });
+    window.labswift.storeGet("minimizeToTray").then((v) => {
+      setMinimizeToTray(v !== false);
     });
   }, []);
 
@@ -155,6 +160,15 @@ export default function AdminApp() {
     setTransfers(updated);
   };
 
+  const retryTransfer = async (id: string) => {
+    if (!adminPassword) {
+      showToast({ type: "error", title: "Admin password not set" });
+      return;
+    }
+    await window.labswift.retryTransfer(id, adminPassword);
+    showToast({ type: "info", title: "Retrying transfer" });
+  };
+
   const openPath = (p: string) => {
     const folder = p.includes("/") || p.includes("\\")
       ? p.substring(0, Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")))
@@ -201,6 +215,16 @@ export default function AdminApp() {
   const doneCount = transfers.filter((t) => t.status === "done").length;
   const failCount = transfers.filter((t) => t.status === "failed").length;
   const sendingCount = transfers.filter((t) => t.status === "sending").length;
+  const activeTransfers = transfers.filter(
+    (t) => t.status === "sending" || t.status === "retrying"
+  );
+  const overallProgress =
+    activeTransfers.length > 0
+      ? Math.round(
+          activeTransfers.reduce((sum, t) => sum + t.progress, 0) /
+            activeTransfers.length
+        )
+      : 0;
 
   return (
     <div className="app-shell">
@@ -341,6 +365,44 @@ export default function AdminApp() {
                   </div>
                 </div>
               </div>
+
+              {/* Active transfer banner */}
+              {activeTransfers.length > 0 && (
+                <div className="card" style={{ padding: 16 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      marginBottom: 10,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <RefreshCw size={14} className="spin" color="var(--accent)" />
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>
+                        Sending {activeTransfers.length} file
+                        {activeTransfers.length > 1 ? "s" : ""}…
+                      </span>
+                    </div>
+                    <span
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 700,
+                        fontFamily: "'JetBrains Mono', monospace",
+                        color: "var(--accent)",
+                      }}
+                    >
+                      {overallProgress}%
+                    </span>
+                  </div>
+                  <div className="progress-bar">
+                    <div
+                      className="progress-fill active"
+                      style={{ width: `${overallProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
 
               {/* PC Selection */}
               <div className="card">
@@ -687,6 +749,7 @@ export default function AdminApp() {
                       transfer={t}
                       onCancel={cancelTransfer}
                       onOpen={openPath}
+                      onRetry={retryTransfer}
                     />
                   ))
                 )}
@@ -767,14 +830,45 @@ export default function AdminApp() {
                     </div>
                   </div>
 
+                  <div className="input-group">
+                    <label
+                      className="input-label"
+                      style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={minimizeToTray}
+                        onChange={async (e) => {
+                          setMinimizeToTray(e.target.checked);
+                          await window.labswift.storeSet(
+                            "minimizeToTray",
+                            e.target.checked
+                          );
+                        }}
+                      />
+                      Minimize to tray instead of closing
+                    </label>
+                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                      Keeps LabSwift running in the background — including
+                      while the PC is locked — so transfers and file
+                      receiving aren't interrupted. Use the tray icon to quit.
+                    </span>
+                  </div>
+
                   <button className="btn btn-primary" onClick={saveSettings}>
                     Save Settings
                   </button>
                 </div>
               </div>
+
+              <div className="card" style={{ maxWidth: 500 }}>
+                <div className="card-title">Appearance</div>
+                <ThemeSwitcher />
+              </div>
             </>
           )}
         </main>
+
       </div>
 
       {/* Edit Peer Modal */}

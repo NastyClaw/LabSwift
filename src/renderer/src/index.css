@@ -6,7 +6,8 @@
   padding: 0;
 }
 
-:root {
+:root,
+[data-theme="dark"] {
   --bg-base: #0a0f1e;
   --bg-surface: #111827;
   --bg-elevated: #1a2234;
@@ -30,6 +31,48 @@
   --titlebar-height: 38px;
 }
 
+[data-theme="light"] {
+  --bg-base: #f4f6fb;
+  --bg-surface: #ffffff;
+  --bg-elevated: #eef1f8;
+  --bg-hover: #e4e9f4;
+  --border: #dce2ef;
+  --border-bright: #c2cbe3;
+  --text-primary: #111827;
+  --text-secondary: #4b5566;
+  --text-muted: #8a93a6;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-dim: rgba(37,99,235,0.1);
+  --success: #16a34a;
+  --success-dim: rgba(22,163,74,0.1);
+  --danger: #dc2626;
+  --danger-dim: rgba(220,38,38,0.1);
+  --warning: #d97706;
+  --warning-dim: rgba(217,119,6,0.1);
+}
+
+[data-theme="midnight"] {
+  --bg-base: #07060f;
+  --bg-surface: #0f0d1e;
+  --bg-elevated: #181428;
+  --bg-hover: #201a36;
+  --border: #241f3d;
+  --border-bright: #3a2f63;
+  --text-primary: #ece9fb;
+  --text-secondary: #a59fc7;
+  --text-muted: #5d5582;
+  --accent: #8b5cf6;
+  --accent-hover: #7c3aed;
+  --accent-dim: rgba(139,92,246,0.14);
+  --success: #22c55e;
+  --success-dim: rgba(34,197,94,0.12);
+  --danger: #f43f5e;
+  --danger-dim: rgba(244,63,94,0.12);
+  --warning: #f59e0b;
+  --warning-dim: rgba(245,158,11,0.12);
+}
+
 html, body, #root {
   height: 100%;
   overflow: hidden;
@@ -40,6 +83,7 @@ html, body, #root {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   user-select: none;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
 /* Scrollbar */
@@ -282,6 +326,7 @@ html, body, #root {
 .badge-online { background: var(--success-dim); color: var(--success); }
 .badge-offline { background: var(--bg-elevated); color: var(--text-muted); }
 .badge-sending { background: var(--accent-dim); color: var(--accent); }
+.badge-retrying { background: var(--warning-dim); color: var(--warning); }
 .badge-done { background: var(--success-dim); color: var(--success); }
 .badge-failed { background: var(--danger-dim); color: var(--danger); }
 .badge-pending { background: var(--warning-dim); color: var(--warning); }
@@ -358,6 +403,39 @@ html, body, #root {
 .progress-fill.success { background: var(--success); }
 .progress-fill.active { background: var(--accent); }
 .progress-fill.failed { background: var(--danger); }
+.progress-fill.retrying { background: var(--warning); }
+
+/* Theme switcher */
+.theme-switcher {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  padding: 3px;
+}
+.theme-switcher button {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 100px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s;
+}
+.theme-switcher button.active {
+  background: var(--accent);
+  color: #fff;
+}
+.theme-switcher button:not(.active):hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
 
 /* Tables */
 .table { width: 100%; border-collapse: collapse; }
@@ -538,6 +616,12 @@ html, body, #root {
   from { transform: translateX(20px); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
 }
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spin { animation: spin 1.2s linear infinite; }
 
 /* Modal */
 .modal-overlay {

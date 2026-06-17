@@ -1,4 +1,4 @@
-import { BrowserWindow, Notification } from "electron";
+import { BrowserWindow, Notification, powerSaveBlocker } from "electron";
 import fs from "fs";
 import http from "http";
 import path from "path";
@@ -8,6 +8,7 @@ import type { Peer } from "./main";
 export type TransferStatus =
   | "pending"
   | "sending"
+  | "retrying"
   | "done"
   | "failed"
   | "cancelled";
@@ -25,11 +26,16 @@ export interface Transfer {
   savedPath?: string;
   error?: string;
   startedAt: number;
+  attempt?: number;
+  maxAttempts?: number;
 }
 
 export class TransferManager {
   private transfers: Map<string, Transfer> = new Map();
   private win: BrowserWindow;
+  private powerSaveBlockerId: number | null = null;
+  private readonly maxAttempts = 3;
+  private readonly retryDelaysMs = [1500, 4000];
 
   constructor(win: BrowserWindow) {
     this.win = win;
@@ -42,18 +48,19 @@ export class TransferManager {
   }
 
   recordIncoming(transferId: string, fileName: string, savedPath: string) {
+    const existing = this.transfers.get(transferId);
     const t: Transfer = {
       id: transferId,
       fileName,
       filePath: savedPath,
       fileSize: fs.existsSync(savedPath) ? fs.statSync(savedPath).size : 0,
-      targetId: "admin",
-      targetName: "Admin",
+      targetId: existing?.targetId ?? "admin",
+      targetName: existing?.targetName ?? "Admin",
       direction: "incoming",
       status: "done",
       progress: 100,
       savedPath,
-      startedAt: Date.now(),
+      startedAt: existing?.startedAt ?? Date.now(),
     };
     this.transfers.set(transferId, t);
     this.emit();
@@ -65,6 +72,40 @@ export class TransferManager {
         body: `${fileName} has been saved to your LabSwift folder.`,
       }).show();
     }
+  }
+
+  /**
+   * Called repeatedly while a file is streaming in on the /receive endpoint
+   * so the UI can show a live, real-time percentage for incoming transfers
+   * too (previously incoming files only ever appeared once 100% complete).
+   */
+  updateIncomingProgress(
+    transferId: string,
+    fileName: string,
+    fileSize: number,
+    receivedBytes: number
+  ) {
+    const existing = this.transfers.get(transferId);
+    const progress =
+      fileSize > 0 ? Math.min(99, Math.round((receivedBytes / fileSize) * 100)) : 0;
+
+    const t: Transfer = existing ?? {
+      id: transferId,
+      fileName,
+      filePath: "",
+      fileSize,
+      targetId: "admin",
+      targetName: "Admin",
+      direction: "incoming",
+      status: "sending",
+      progress: 0,
+      startedAt: Date.now(),
+    };
+    t.fileSize = fileSize;
+    t.status = "sending";
+    t.progress = progress;
+    this.transfers.set(transferId, t);
+    this.emit();
   }
 
   cancelTransfer(transferId: string) {
@@ -105,6 +146,8 @@ export class TransferManager {
           status: "pending",
           progress: 0,
           startedAt: Date.now(),
+          attempt: 1,
+          maxAttempts: this.maxAttempts,
         };
         this.transfers.set(id, t);
         queued++;
@@ -118,26 +161,71 @@ export class TransferManager {
     return { queued };
   }
 
+  /** Re-queues a single failed/cancelled transfer for another attempt. */
+  async retryTransfer(transferId: string, adminPassword: string): Promise<void> {
+    const t = this.transfers.get(transferId);
+    if (!t || t.direction !== "outgoing") return;
+    const store = getStore();
+    const peers = (store.get("peers") as Peer[]) ?? [];
+    const peer = peers.find((p) => p.id === t.targetId);
+    if (!peer || !fs.existsSync(t.filePath)) return;
+
+    t.status = "pending";
+    t.progress = 0;
+    t.error = undefined;
+    t.attempt = 1;
+    this.emit();
+    this.sendFile(t, peer, adminPassword).catch(() => {});
+  }
+
   private async sendFile(
     transfer: Transfer,
     peer: Peer,
     adminPassword: string
   ): Promise<void> {
-    transfer.status = "sending";
-    this.emit();
+    const maxAttempts = transfer.maxAttempts ?? this.maxAttempts;
 
-    try {
-      await this.uploadFile(transfer, peer, adminPassword);
-      transfer.status = "done";
-      transfer.progress = 100;
-    } catch (err) {
-      const t = this.transfers.get(transfer.id);
-      if (t?.status === "cancelled") return;
-      transfer.status = "failed";
-      transfer.error = String(err);
+    for (let attempt = transfer.attempt ?? 1; attempt <= maxAttempts; attempt++) {
+      transfer.attempt = attempt;
+      transfer.status = attempt === 1 ? "sending" : "retrying";
+      transfer.progress = 0;
+      this.updatePowerSaveBlocker();
+      this.emit();
+
+      try {
+        await this.uploadFile(transfer, peer, adminPassword);
+        transfer.status = "done";
+        transfer.progress = 100;
+        this.emit();
+        this.updatePowerSaveBlocker();
+        return;
+      } catch (err) {
+        const current = this.transfers.get(transfer.id);
+        if (current?.status === "cancelled") {
+          this.updatePowerSaveBlocker();
+          return;
+        }
+
+        const isLastAttempt = attempt >= maxAttempts;
+        if (isLastAttempt) {
+          transfer.status = "failed";
+          transfer.error = String(err);
+          this.emit();
+          this.updatePowerSaveBlocker();
+          return;
+        }
+
+        // Wait with backoff before the next automatic retry, unless the
+        // user cancels while we're waiting.
+        const delay = this.retryDelaysMs[attempt - 1] ?? 5000;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        const stillThere = this.transfers.get(transfer.id);
+        if (stillThere?.status === "cancelled") {
+          this.updatePowerSaveBlocker();
+          return;
+        }
+      }
     }
-
-    this.emit();
   }
 
   private uploadFile(
@@ -224,7 +312,43 @@ export class TransferManager {
 
   private emit() {
     if (!this.win.isDestroyed()) {
-      this.win.webContents.send("transfers:updated", this.getTransfers());
+      const all = this.getTransfers();
+      this.win.webContents.send("transfers:updated", all);
+      this.updateTaskbarProgress(all);
+    }
+  }
+
+  /**
+   * Mirrors overall transfer progress onto the Windows taskbar icon, so
+   * progress stays visible even while the LabSwift window is minimized.
+   */
+  private updateTaskbarProgress(all: Transfer[]) {
+    if (this.win.isDestroyed()) return;
+    const active = all.filter(
+      (t) => t.status === "sending" || t.status === "retrying"
+    );
+    if (active.length === 0) {
+      this.win.setProgressBar(-1);
+      return;
+    }
+    const avg =
+      active.reduce((sum, t) => sum + t.progress, 0) / active.length / 100;
+    this.win.setProgressBar(Math.min(0.99, Math.max(0, avg)));
+  }
+
+  /**
+   * Keeps the system from suspending the app while a transfer is actively
+   * in flight, so a long send isn't interrupted by the OS power plan.
+   */
+  private updatePowerSaveBlocker() {
+    const hasActive = Array.from(this.transfers.values()).some(
+      (t) => t.status === "sending" || t.status === "retrying"
+    );
+    if (hasActive && this.powerSaveBlockerId === null) {
+      this.powerSaveBlockerId = powerSaveBlocker.start("prevent-app-suspension");
+    } else if (!hasActive && this.powerSaveBlockerId !== null) {
+      powerSaveBlocker.stop(this.powerSaveBlockerId);
+      this.powerSaveBlockerId = null;
     }
   }
 }

@@ -1,19 +1,21 @@
 import React from "react";
 import { Transfer } from "../lib/types";
 import { formatBytes } from "../lib/format";
-import { X, ArrowUpRight, ArrowDownLeft } from "lucide-react";
+import { X, ArrowUpRight, ArrowDownLeft, RotateCw } from "lucide-react";
 
 interface Props {
   transfer: Transfer;
   onCancel?: (id: string) => void;
   onOpen?: (path: string) => void;
+  onRetry?: (id: string) => void;
 }
 
-export default function TransferRow({ transfer, onCancel, onOpen }: Props) {
+export default function TransferRow({ transfer, onCancel, onOpen, onRetry }: Props) {
   const statusColor: Record<string, string> = {
     done: "var(--success)",
     failed: "var(--danger)",
     sending: "var(--accent)",
+    retrying: "var(--warning)",
     pending: "var(--warning)",
     cancelled: "var(--text-muted)",
   };
@@ -22,6 +24,7 @@ export default function TransferRow({ transfer, onCancel, onOpen }: Props) {
     done: "success",
     failed: "failed",
     sending: "active",
+    retrying: "retrying",
     pending: "active",
     cancelled: "failed",
   };
@@ -96,9 +99,16 @@ export default function TransferRow({ transfer, onCancel, onOpen }: Props) {
           <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
             {formatBytes(transfer.fileSize)}
           </span>
+          {transfer.status === "retrying" && transfer.attempt && (
+            <span style={{ fontSize: 11, color: "var(--warning)" }}>
+              Attempt {transfer.attempt}/{transfer.maxAttempts ?? 3}
+            </span>
+          )}
         </div>
         {/* Progress bar */}
-        {(transfer.status === "sending" || transfer.status === "done") && (
+        {(transfer.status === "sending" ||
+          transfer.status === "retrying" ||
+          transfer.status === "done") && (
           <div className="progress-bar" style={{ marginTop: 6, width: "100%" }}>
             <div
               className={`progress-fill ${progressColor[transfer.status]}`}
@@ -118,7 +128,7 @@ export default function TransferRow({ transfer, onCancel, onOpen }: Props) {
             textTransform: "capitalize",
           }}
         >
-          {transfer.status === "sending"
+          {transfer.status === "sending" || transfer.status === "retrying"
             ? `${transfer.progress}%`
             : transfer.status}
         </span>
@@ -133,7 +143,22 @@ export default function TransferRow({ transfer, onCancel, onOpen }: Props) {
           </button>
         )}
 
-        {(transfer.status === "sending" || transfer.status === "pending") &&
+        {transfer.status === "failed" &&
+          transfer.direction === "outgoing" &&
+          onRetry && (
+            <button
+              className="btn btn-sm btn-secondary"
+              onClick={() => onRetry(transfer.id)}
+              title="Retry transfer"
+            >
+              <RotateCw size={12} />
+              Retry
+            </button>
+          )}
+
+        {(transfer.status === "sending" ||
+          transfer.status === "retrying" ||
+          transfer.status === "pending") &&
           onCancel && (
             <button
               className="btn-icon"

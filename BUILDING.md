@@ -6,7 +6,7 @@ Complete step-by-step guide to build and package LabSwift into a single Windows 
 
 Install these on your Windows build machine:
 
-1. **Node.js 20+** — https://nodejs.org (LTS recommended)
+1. **Node.js 22+** — https://nodejs.org (LTS recommended; Node 18 is end-of-life and Vite 7 will refuse to run on it)
 2. **pnpm** — `npm install -g pnpm`
 3. **Inno Setup 6** — https://jrsoftware.org/isdl.php (for the installer)
 4. **Git** (optional, for cloning)
@@ -91,10 +91,25 @@ The installer:
 - Verify the admin password matches on admin and client
 - Check the client's save folder exists and is writable
 
-**Build fails with native module errors?**
-- Run `pnpm approve-builds` then `pnpm install` again
-- Make sure you have Visual Studio Build Tools installed (for better-sqlite3)
-- Or remove better-sqlite3 from dependencies if not used
+**Build fails on Windows with "...is not a valid Win32 application" during `install-app-deps`?**
+- This is a long-standing electron-builder bug: when it needs to rebuild a
+  *native* dependency (one with C/C++ code, compiled via node-gyp) for
+  Electron's ABI, it tries to invoke pnpm's `pnpm.cjs` directly as if it
+  were an `.exe`, which Windows refuses to run.
+- `better-sqlite3` used to be listed as a dependency here and triggered
+  exactly this, even though nothing in the codebase ever used it (the app
+  persists data with `electron-store`, not SQLite) — it's been removed.
+- If you ever add a genuinely native dependency in the future, don't rely
+  on electron-builder's automatic `npmRebuild`. Instead add
+  `@electron/rebuild` as a devDependency and run it explicitly
+  (`npx electron-rebuild`) in a build step before `electron-builder`, since
+  that invokes things through `node` directly and isn't affected by this bug.
+
+**File transfer fails with 403 Unauthorized?**
+- Verify the admin password matches on admin and client. As of this build,
+  the password is saved correctly for both roles right after Setup — if
+  you're rebuilding from an older copy of this project, an admin who never
+  revisited Settings could have had no password saved at all.
 
 **Inno Setup not found?**
 - Install from https://jrsoftware.org/isdl.php
@@ -109,3 +124,20 @@ netsh advfirewall firewall add rule name="LabSwift Admin" dir=in action=allow pr
 netsh advfirewall firewall add rule name="LabSwift Port 7890" dir=in action=allow protocol=TCP localport=7890
 netsh advfirewall firewall add rule name="LabSwift Port 7891" dir=in action=allow protocol=TCP localport=7891
 ```
+
+## What's new
+
+- **Real-time progress on both sides.** Outgoing transfers already reported
+  live percentage; incoming transfers now do too (previously a received
+  file only appeared once 100% done).
+- **Automatic retry.** A failed send is retried automatically up to 3
+  times with backoff before being marked failed; failed transfers also get
+  a manual Retry button.
+- **Background reliability.** Closing the window minimizes to the system
+  tray instead of quitting (toggle in Settings), and a power-save blocker
+  keeps an active transfer from being interrupted by the OS power plan.
+  Note: this app already kept running while the screen is locked, since
+  Windows only suspends background apps on actual sleep, not on lock — the
+  tray + power-save-blocker changes are about not getting closed or
+  throttled, not about "unlocking" something that was previously blocked.
+- **Themes.** Dark (default), Light, and Midnight, switchable in Settings.

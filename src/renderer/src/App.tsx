@@ -3,6 +3,7 @@ import Setup from "./pages/Setup";
 import AdminApp from "./pages/AdminApp";
 import ClientApp from "./pages/ClientApp";
 import { ToastProvider } from "./lib/toast";
+import { ThemeProvider } from "./lib/theme";
 
 type Role = "admin" | "client" | null;
 
@@ -36,14 +37,16 @@ export default function App() {
   }
 
   return (
-    <ToastProvider>
-      {!role ? (
-        <Setup onComplete={(r) => setRole(r)} />
-      ) : role === "admin" ? (
-        <AdminApp />
-      ) : (
-        <ClientApp />
-      )}
-    </ToastProvider>
+    <ThemeProvider>
+      <ToastProvider>
+        {!role ? (
+          <Setup onComplete={(r) => setRole(r)} />
+        ) : role === "admin" ? (
+          <AdminApp />
+        ) : (
+          <ClientApp />
+        )}
+      </ToastProvider>
+    </ThemeProvider>
   );
 }

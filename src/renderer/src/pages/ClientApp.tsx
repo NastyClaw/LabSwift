@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import TitleBar from "../components/TitleBar";
 import TransferRow from "../components/TransferRow";
+import ThemeSwitcher from "../components/ThemeSwitcher";
 import { Transfer } from "../lib/types";
 import { useToast } from "../lib/toast";
 
@@ -20,6 +21,7 @@ export default function ClientApp() {
   const [savePath, setSavePath] = useState("");
   const [pcName, setPcName] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
+  const [minimizeToTray, setMinimizeToTray] = useState(true);
   const [notifications, setNotifications] = useState<
     { id: string; fileName: string; time: number }[]
   >([]);
@@ -31,6 +33,9 @@ export default function ClientApp() {
     window.labswift.storeGet("pcName").then((n) => setPcName((n as string) || ""));
     window.labswift.storeGet("adminPassword").then((p) => {
       if (p) setAdminPassword(p as string);
+    });
+    window.labswift.storeGet("minimizeToTray").then((v) => {
+      setMinimizeToTray(v !== false);
     });
   }, []);
 
@@ -400,10 +405,40 @@ export default function ClientApp() {
                     </span>
                   </div>
 
+                  <div className="input-group">
+                    <label
+                      className="input-label"
+                      style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={minimizeToTray}
+                        onChange={async (e) => {
+                          setMinimizeToTray(e.target.checked);
+                          await window.labswift.storeSet(
+                            "minimizeToTray",
+                            e.target.checked
+                          );
+                        }}
+                      />
+                      Minimize to tray instead of closing
+                    </label>
+                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                      Keeps this PC listening for incoming files in the
+                      background — including while locked. Use the tray icon
+                      to quit.
+                    </span>
+                  </div>
+
                   <button className="btn btn-primary" onClick={saveSettings}>
                     Save Settings
                   </button>
                 </div>
+              </div>
+
+              <div className="card" style={{ maxWidth: 500 }}>
+                <div className="card-title">Appearance</div>
+                <ThemeSwitcher />
               </div>
             </>
           )}

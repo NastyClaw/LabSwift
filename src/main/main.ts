@@ -6,6 +6,8 @@ import {
   Notification,
   shell,
   nativeImage,
+  Tray,
+  Menu,
 } from "electron";
 import path from "path";
 import fs from "fs";
@@ -16,6 +18,8 @@ import { TransferManager } from "./transfers";
 
 let mainWindow: BrowserWindow | null = null;
 let transferManager: TransferManager | null = null;
+let tray: Tray | null = null;
+let isQuitting = false;
 
 const isDev = process.env.NODE_ENV === "development";
 
@@ -51,10 +55,61 @@ function createWindow() {
     mainWindow?.show();
   });
 
+  // Minimize-to-tray: closing the window hides it instead of quitting, so
+  // LabSwift keeps listening/sending in the background (e.g. while the PC
+  // is locked) unless the user explicitly quits from the tray menu.
+  mainWindow.on("close", (e) => {
+    const store = getStore();
+    const minimizeToTray = store.get("minimizeToTray") !== false;
+    if (!isQuitting && minimizeToTray) {
+      e.preventDefault();
+      mainWindow?.hide();
+    }
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+
+  createTray(iconExists ? iconPath : undefined);
 }
+
+function createTray(iconPath?: string) {
+  if (tray) return;
+  const icon = iconPath
+    ? nativeImage.createFromPath(iconPath)
+    : nativeImage.createEmpty();
+  tray = new Tray(icon);
+  tray.setToolTip("LabSwift");
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: "Show LabSwift",
+        click: () => {
+          mainWindow?.show();
+          mainWindow?.focus();
+        },
+      },
+      { type: "separator" },
+      {
+        label: "Quit LabSwift",
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
+      },
+    ])
+  );
+  tray.on("click", () => {
+    mainWindow?.show();
+    mainWindow?.focus();
+  });
+}
+
+// Correct Windows notification identity/branding — without this, toast
+// notifications (including those shown while the screen is locked) can be
+// grouped under a generic Electron/Node icon instead of LabSwift.
+app.setAppUserModelId("com.labswift.app");
 
 app.whenReady().then(async () => {
   setupStore();
@@ -72,13 +127,20 @@ app.whenReady().then(async () => {
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    else mainWindow?.show();
   });
 });
 
+app.on("before-quit", () => {
+  isQuitting = true;
+});
+
 app.on("window-all-closed", () => {
-  stopDiscovery();
-  stopServer();
-  if (process.platform !== "darwin") app.quit();
+  if (isQuitting || process.platform !== "darwin") {
+    stopDiscovery();
+    stopServer();
+    app.quit();
+  }
 });
 
 // ── Window controls ──
@@ -109,9 +171,15 @@ ipcMain.handle(
       const bcrypt = await import("bcryptjs");
       const hash = await bcrypt.hash(password, 10);
       store.set("adminPasswordHash", hash);
-    } else {
-      store.set("adminPassword", password);
     }
+    // The plaintext value is the shared network secret that admin and
+    // client PCs both present on every transfer (checked in server.ts).
+    // It must be persisted for BOTH roles at setup time — previously this
+    // only happened for clients, leaving admins with an empty value until
+    // they happened to revisit Settings and re-save it, which caused
+    // mismatched passwords (and 403s) for any admin who sent files right
+    // after first-time setup.
+    store.set("adminPassword", password);
     store.set("role", role);
 
     const port = role === "admin" ? 7890 : 7891;
@@ -178,6 +246,13 @@ ipcMain.handle("transfer:list", () => {
 ipcMain.handle("transfer:cancel", (_e, transferId: string) => {
   transferManager?.cancelTransfer(transferId);
 });
+
+ipcMain.handle(
+  "transfer:retry",
+  (_e, transferId: string, adminPassword: string) => {
+    transferManager?.retryTransfer(transferId, adminPassword);
+  }
+);
 
 // ── Peers ──
 ipcMain.handle("peers:list", () => {

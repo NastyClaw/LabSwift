@@ -18,11 +18,13 @@ export interface Transfer {
   targetId: string;
   targetName: string;
   direction: "outgoing" | "incoming";
-  status: "pending" | "sending" | "done" | "failed" | "cancelled";
+  status: "pending" | "sending" | "retrying" | "done" | "failed" | "cancelled";
   progress: number;
   savedPath?: string;
   error?: string;
   startedAt: number;
+  attempt?: number;
+  maxAttempts?: number;
 }
 
 export type Role = "admin" | "client";
