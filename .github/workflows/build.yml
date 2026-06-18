@@ -21,22 +21,25 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'pnpm'
 
       - name: Install Project Dependencies
         run: pnpm install
 
       - name: Create Unpacked Application Binaries
-        run: pnpm pack
+        run: pnpm run pack
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
       - name: Compile Inno Setup Installer
-        run: iscc installer.iss
+        run: iscc installer/installer.iss
 
       - name: Save the Installer Artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: Output/*.exe
+          path: release/*.exe
