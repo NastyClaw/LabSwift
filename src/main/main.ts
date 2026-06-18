@@ -22,9 +22,9 @@ let tray: Tray | null = null;
 let isQuitting = false;
 
 const isDev = process.env.NODE_ENV === "development";
-
 function createWindow() {
-  const iconPath = path.join(__dirname, "../../assets/icon.ico");
+  // Use app.getAppPath() to safely reference the root folder in production
+  const iconPath = path.join(app.getAppPath(), "assets/icon.ico");
   const iconExists = fs.existsSync(iconPath);
 
   mainWindow = new BrowserWindow({
@@ -37,7 +37,8 @@ function createWindow() {
     titleBarStyle: "hidden",
     backgroundColor: "#0f172a",
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      // Pin preload directly relative to the app root
+      preload: path.join(app.getAppPath(), "dist-main/preload.js"), // Change "dist-main" if your main output folder has a different name
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -48,9 +49,9 @@ function createWindow() {
     mainWindow.loadURL("http://localhost:5173");
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(path.join(__dirname, "../../dist-renderer/index.html"));
+    // Guarantees it finds the index file under the root structure
+    mainWindow.loadFile(path.join(app.getAppPath(), "dist-renderer/index.html"));
   }
-
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
   });
