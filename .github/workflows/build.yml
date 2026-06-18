@@ -36,7 +36,7 @@ jobs:
         run: choco install innosetup -y
 
       - name: Compile Inno Setup Installer
-        run: iscc installer/installer.iss
+        run: iscc installer/LabSwift.iss
 
       - name: Save the Installer Artifact
         uses: actions/upload-artifact@v4
