@@ -14,6 +14,7 @@ declare global {
         password: string
       ) => Promise<{ success: boolean }>;
       verifyAdmin: (password: string) => Promise<boolean>;
+      setupReset: () => Promise<{ success: boolean }>;
       openFile: () => Promise<string[]>;
       openFolder: () => Promise<string | null>;
       saveFolder: () => Promise<string | null>;
