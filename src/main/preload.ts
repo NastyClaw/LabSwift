@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld("labswift", {
     ipcRenderer.invoke("setup:complete", role, password),
   verifyAdmin: (password: string) =>
     ipcRenderer.invoke("setup:verifyAdmin", password),
+  setupReset: () => ipcRenderer.invoke("setup:reset"),
 
   // Dialogs
   openFile: () => ipcRenderer.invoke("dialog:openFile"),
