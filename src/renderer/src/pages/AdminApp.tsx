@@ -532,7 +532,7 @@ export default function AdminApp() {
                           <span className="file-name" title={f}>
                             {name}
                           </span>
-                          <span className="file-size">{f}</span>
+                          <span className="file-size" title={f}>{f.replace(/\\/g, "/").split("/").slice(-2).join("/")}</span>
                           <button
                             className="btn-icon"
                             onClick={() => removeFile(f)}
@@ -864,6 +864,25 @@ export default function AdminApp() {
               <div className="card" style={{ maxWidth: 500 }}>
                 <div className="card-title">Appearance</div>
                 <ThemeSwitcher />
+              </div>
+
+              <div className="card" style={{ maxWidth: 500 }}>
+                <div className="card-title" style={{ color: "var(--danger)" }}>Danger Zone</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                    Reset this PC back to the first-time setup screen. All stored settings and the admin password will be cleared.
+                  </div>
+                  <button
+                    className="btn btn-danger"
+                    onClick={async () => {
+                      if (!window.confirm("Reset LabSwift? This will clear all settings and return to setup.")) return;
+                      await window.labswift.setupReset();
+                      window.location.reload();
+                    }}
+                  >
+                    Reset Setup
+                  </button>
+                </div>
               </div>
             </>
           )}
