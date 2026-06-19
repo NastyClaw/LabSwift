@@ -2,9 +2,9 @@
 AppName=LabSwift
 AppVersion=1.0.0
 AppPublisher=LabSwift
-AppPublisherURL=https://github.com/labswift
-AppSupportURL=https://github.com/labswift
-AppUpdatesURL=https://github.com/labswift
+AppPublisherURL=https://labswift.rf.gd
+AppSupportURL=https://labswift.rf.gd
+AppUpdatesURL=https://labswift.rf.gd
 DefaultDirName={autopf}\LabSwift
 DefaultGroupName=LabSwift
 AllowNoIcons=no
