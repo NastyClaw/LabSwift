@@ -23,7 +23,6 @@ let isQuitting = false;
 
 const isDev = process.env.NODE_ENV === "development";
 function createWindow() {
-  // Use app.getAppPath() to safely reference the root folder in production
   const iconPath = path.join(app.getAppPath(), "assets/icon.ico");
   const iconExists = fs.existsSync(iconPath);
 
@@ -37,8 +36,7 @@ function createWindow() {
     titleBarStyle: "hidden",
     backgroundColor: "#0f172a",
     webPreferences: {
-      // Pin preload directly relative to the app root
-      preload: path.join(app.getAppPath(), "dist-main/preload.js"), // Change "dist-main" if your main output folder has a different name
+      preload: path.join(app.getAppPath(), "dist-main/preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -49,16 +47,12 @@ function createWindow() {
     mainWindow.loadURL("http://localhost:5173");
     mainWindow.webContents.openDevTools();
   } else {
-    // Guarantees it finds the index file under the root structure
     mainWindow.loadFile(path.join(app.getAppPath(), "dist-renderer/index.html"));
   }
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
   });
 
-  // Minimize-to-tray: closing the window hides it instead of quitting, so
-  // LabSwift keeps listening/sending in the background (e.g. while the PC
-  // is locked) unless the user explicitly quits from the tray menu.
   mainWindow.on("close", (e) => {
     const store = getStore();
     const minimizeToTray = store.get("minimizeToTray") !== false;
@@ -107,9 +101,6 @@ function createTray(iconPath?: string) {
   });
 }
 
-// Correct Windows notification identity/branding — without this, toast
-// notifications (including those shown while the screen is locked) can be
-// grouped under a generic Electron/Node icon instead of LabSwift.
 app.setAppUserModelId("com.labswift.app");
 
 app.whenReady().then(async () => {
@@ -173,13 +164,6 @@ ipcMain.handle(
       const hash = await bcrypt.hash(password, 10);
       store.set("adminPasswordHash", hash);
     }
-    // The plaintext value is the shared network secret that admin and
-    // client PCs both present on every transfer (checked in server.ts).
-    // It must be persisted for BOTH roles at setup time — previously this
-    // only happened for clients, leaving admins with an empty value until
-    // they happened to revisit Settings and re-save it, which caused
-    // mismatched passwords (and 403s) for any admin who sent files right
-    // after first-time setup.
     store.set("adminPassword", password);
     store.set("role", role);
 
@@ -198,6 +182,21 @@ ipcMain.handle("setup:verifyAdmin", async (_e, password: string) => {
   if (!hash) return false;
   const bcrypt = await import("bcryptjs");
   return bcrypt.compare(password, hash);
+});
+
+// ── Reset setup (lets admin/client re-run the first-time wizard) ──
+ipcMain.handle("setup:reset", async () => {
+  stopDiscovery();
+  stopServer();
+  const store = getStore();
+  store.delete("role");
+  store.delete("adminPasswordHash");
+  store.delete("adminPassword");
+  store.delete("peers");
+  store.delete("peerId");
+  store.delete("pcName");
+  transferManager = null;
+  return { success: true };
 });
 
 // ── File selection ──
