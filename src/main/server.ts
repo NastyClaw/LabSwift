@@ -89,6 +89,7 @@ export async function startServer(
       if (role === "client") {
         const storedPassword = store.get("adminPassword") as string;
         if (adminPassword !== storedPassword) {
+          console.warn(`[LabSwift] /set-save-path rejected: admin password mismatch (from ${req.ip})`);
           res.status(403).json({ error: "Unauthorized" });
           return;
         }
@@ -123,6 +124,7 @@ export async function startServer(
       if (role === "client") {
         const storedPassword = store.get("adminPassword") as string;
         if (adminPassword !== storedPassword) {
+          console.warn(`[LabSwift] /chat rejected: admin password mismatch (from ${req.ip})`);
           res.status(403).json({ error: "Unauthorized" });
           return;
         }
@@ -155,6 +157,7 @@ export async function startServer(
         if (role === "client") {
           const storedPassword = store.get("adminPassword") as string;
           if (adminPassword !== storedPassword) {
+            console.warn(`[LabSwift] /receive rejected: admin password mismatch (from ${req.ip})`);
             res.status(403).json({ error: "Unauthorized" });
             return;
           }

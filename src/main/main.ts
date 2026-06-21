@@ -246,6 +246,7 @@ ipcMain.handle("chat:broadcast", async (_e, targetIds: string[], text: string, a
   const pcName = (store.get("pcName") as string) || os.hostname();
   const targets = peers.filter((p) => targetIds.includes(p.id) && p.online);
   let sent = 0;
+  const errors: { peerId: string; reason: string }[] = [];
 
   for (const peer of targets) {
     try {
@@ -255,13 +256,21 @@ ipcMain.handle("chat:broadcast", async (_e, targetIds: string[], text: string, a
         body: JSON.stringify({ text, from: pcName, at: Date.now() }),
         signal: AbortSignal.timeout(5000),
       });
-      if (res.ok) sent++;
+      if (res.ok) {
+        sent++;
+      } else {
+        const reason = res.status === 403 ? "Unauthorized (password mismatch)" : `HTTP ${res.status}`;
+        console.error(`[LabSwift] chat send to ${peer.id} failed: ${reason}`);
+        errors.push({ peerId: peer.id, reason });
+      }
     } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
       console.error(`[LabSwift] chat send to ${peer.id} failed:`, err);
+      errors.push({ peerId: peer.id, reason });
     }
   }
 
-  return { sent, total: targets.length };
+  return { sent, total: targets.length, errors };
 });
 
 // ── Remote save path push (admin → clients) ──
@@ -283,7 +292,11 @@ ipcMain.handle(
           body: JSON.stringify({ savePath }),
           signal: AbortSignal.timeout(5000),
         });
-        if (res.ok) pushed++;
+        if (res.ok) {
+          pushed++;
+        } else {
+          console.error(`[LabSwift] savePath push to ${peer.id} failed: HTTP ${res.status}`);
+        }
       } catch (err) {
         console.error(`[LabSwift] savePath push to ${peer.id} failed:`, err);
       }

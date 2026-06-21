@@ -175,7 +175,13 @@ export default function AdminApp() {
         { id: Math.random().toString(36).slice(2), text: broadcastText.trim(), targets: result.total, sent: result.sent, at: Date.now() },
         ...prev.slice(0, 49),
       ]);
-      showToast({ type: "success", title: `Message sent to ${result.sent}/${result.total} PCs` });
+      if (result.sent === 0) {
+        showToast({ type: "error", title: `Message failed to send (0/${result.total} PCs)`, body: "Check the admin password matches on all client PCs." });
+      } else if (result.sent < result.total) {
+        showToast({ type: "info", title: `Message sent to ${result.sent}/${result.total} PCs`, body: "Some PCs failed — check console for details." });
+      } else {
+        showToast({ type: "success", title: `Message sent to ${result.sent}/${result.total} PCs` });
+      }
       setBroadcastText("");
     } catch (e) { showToast({ type: "error", title: "Broadcast failed", body: String(e) }); }
     setBroadcasting(false);
