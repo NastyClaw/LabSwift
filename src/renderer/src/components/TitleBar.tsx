@@ -1,5 +1,6 @@
 import React from "react";
-import { Minus, Square, X, Zap } from "lucide-react";
+import { Minus, Square, X } from "lucide-react";
+import { LabSwiftMark } from "./LabSwiftMark";
 
 interface Props {
   title?: string;
@@ -21,7 +22,7 @@ export default function TitleBar({ title, role }: Props) {
             justifyContent: "center",
           }}
         >
-          <Zap size={12} color="#fff" />
+          <LabSwiftMark size={12} color="#fff" />
         </div>
         <span
           style={{

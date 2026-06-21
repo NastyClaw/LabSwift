@@ -1,29 +1,33 @@
 import Store from "electron-store";
+import path from "path";
+import os from "os";
 
-type StoreSchema = Record<string, unknown>;
+let store: Store | null = null;
 
-let store: Store<StoreSchema> | null = null;
+/**
+ * Initialise the shared store.
+ *
+ * On Windows we use %PROGRAMDATA%\LabSwift as the data directory so that ALL
+ * Windows user accounts on the same machine share the same config (important
+ * for lab PCs where teachers log in as a different account than students).
+ *
+ * On other platforms we fall back to Electron's default userData path.
+ */
+export function setupStore(): void {
+  let cwd: string | undefined;
 
-export function setupStore() {
-  store = new Store<StoreSchema>({
-    name: "labswift-config",
-    defaults: {
-      role: null,
-      adminPasswordHash: null,
-      adminPassword: null,
-      peers: [],
-      savePath: null,
-      pcName: null,
-      transfers: [],
-      peerId: null,
-      incomingTransfers: {},
-      minimizeToTray: true,
-      theme: "dark",
-    },
-  });
+  if (process.platform === "win32") {
+    const programData = process.env.PROGRAMDATA || "C:\\ProgramData";
+    cwd = path.join(programData, "LabSwift");
+  }
+
+  store = new Store({ cwd }) as unknown as Store;
 }
 
-export function getStore(): Store<StoreSchema> {
-  if (!store) throw new Error("Store not initialized");
-  return store;
+export function getStore(): Store {
+  if (!store) {
+    // Safety net: auto-initialise if called before setupStore()
+    setupStore();
+  }
+  return store!;
 }

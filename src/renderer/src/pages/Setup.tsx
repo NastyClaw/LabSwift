@@ -1,6 +1,7 @@
 import React, { useState } from "react";
-import { Shield, Monitor, Eye, EyeOff, Zap } from "lucide-react";
+import { Shield, Monitor, Eye, EyeOff } from "lucide-react";
 import TitleBar from "../components/TitleBar";
+import { LabSwiftMark } from "../components/LabSwiftMark";
 
 interface Props {
   onComplete: (role: "admin" | "client") => void;
@@ -38,7 +39,7 @@ export default function Setup({ onComplete }: Props) {
     try {
       await window.labswift.setupComplete(role!, password);
       onComplete(role!);
-    } catch (e) {
+    } catch {
       setError("Setup failed. Please try again.");
     }
     setLoading(false);
@@ -62,7 +63,7 @@ export default function Setup({ onComplete }: Props) {
               margin: "0 auto 16px",
             }}
           >
-            <Zap size={26} color="#fff" />
+            <LabSwiftMark size={26} color="#fff" />
           </div>
           <div
             style={{

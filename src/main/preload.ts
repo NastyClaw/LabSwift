@@ -12,6 +12,10 @@ contextBridge.exposeInMainWorld("labswift", {
     ipcRenderer.invoke("store:set", key, value),
   storeDelete: (key: string) => ipcRenderer.invoke("store:delete", key),
 
+  // Lock screen
+  verifyLockScreen: (password: string) =>
+    ipcRenderer.invoke("lockScreen:verify", password),
+
   // Setup
   setupComplete: (role: "admin" | "client", password: string) =>
     ipcRenderer.invoke("setup:complete", role, password),
@@ -27,6 +31,28 @@ contextBridge.exposeInMainWorld("labswift", {
   // Transfers
   sendFiles: (targetIds: string[], filePaths: string[], adminPassword: string) =>
     ipcRenderer.invoke("transfer:send", targetIds, filePaths, adminPassword),
+  sendFolder: (targetIds: string[], folderPath: string, adminPassword: string) =>
+    ipcRenderer.invoke("transfer:sendFolder", targetIds, folderPath, adminPassword),
+
+  // Chat
+  broadcastMessage: (targetIds: string[], text: string, adminPassword: string) =>
+    ipcRenderer.invoke("chat:broadcast", targetIds, text, adminPassword),
+  onChatMessage: (cb: (msg: { from: string; text: string; at: number }) => void) => {
+    const listener = (_e: unknown, msg: { from: string; text: string; at: number }) => cb(msg);
+    ipcRenderer.on("chat:message", listener);
+    return () => ipcRenderer.removeListener("chat:message", listener);
+  },
+
+  // Remote save path push (admin → clients)
+  pushSavePathToClients: (targetIds: string[], savePath: string, adminPassword: string) =>
+    ipcRenderer.invoke("savePath:pushToClients", targetIds, savePath, adminPassword),
+  // Client: listen for save path changes pushed by admin
+  onSavePathUpdated: (cb: (newPath: string) => void) => {
+    const listener = (_e: unknown, newPath: string) => cb(newPath);
+    ipcRenderer.on("savePath:updated", listener);
+    return () => ipcRenderer.removeListener("savePath:updated", listener);
+  },
+
   listTransfers: () => ipcRenderer.invoke("transfer:list"),
   cancelTransfer: (id: string) => ipcRenderer.invoke("transfer:cancel", id),
   retryTransfer: (id: string, adminPassword: string) =>
@@ -39,7 +65,7 @@ contextBridge.exposeInMainWorld("labswift", {
   setPeerRow: (id: string, row: string, seat: string) =>
     ipcRenderer.invoke("peer:setRow", id, row, seat),
 
-  // Save path
+  // Save path (local)
   getSavePath: () => ipcRenderer.invoke("savePath:get"),
   setSavePath: (p: string) => ipcRenderer.invoke("savePath:set", p),
 
@@ -50,7 +76,7 @@ contextBridge.exposeInMainWorld("labswift", {
   notify: (title: string, body: string) =>
     ipcRenderer.invoke("notify", title, body),
 
-  // IPC events from main
+  // IPC events
   on: (channel: string, cb: (...args: unknown[]) => void) => {
     ipcRenderer.on(channel, (_event, ...args) => cb(...args));
   },

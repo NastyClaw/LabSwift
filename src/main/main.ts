@@ -11,6 +11,8 @@ import {
 } from "electron";
 import path from "path";
 import fs from "fs";
+import os from "os";
+import AdmZip from "adm-zip";
 import { setupStore, getStore } from "./store";
 import { startServer, stopServer } from "./server";
 import { startDiscovery, stopDiscovery } from "./discovery";
@@ -22,6 +24,7 @@ let tray: Tray | null = null;
 let isQuitting = false;
 
 const isDev = process.env.NODE_ENV === "development";
+
 function createWindow() {
   const iconPath = path.join(app.getAppPath(), "assets/icon.ico");
   const iconExists = fs.existsSync(iconPath);
@@ -49,59 +52,38 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(app.getAppPath(), "dist-renderer/index.html"));
   }
-  mainWindow.once("ready-to-show", () => {
-    mainWindow?.show();
-  });
+
+  mainWindow.once("ready-to-show", () => { mainWindow?.show(); });
 
   mainWindow.on("close", (e) => {
     const store = getStore();
     const minimizeToTray = store.get("minimizeToTray") !== false;
-    if (!isQuitting && minimizeToTray) {
-      e.preventDefault();
-      mainWindow?.hide();
-    }
+    if (!isQuitting && minimizeToTray) { e.preventDefault(); mainWindow?.hide(); }
   });
 
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-  });
-
+  mainWindow.on("closed", () => { mainWindow = null; });
   createTray(iconExists ? iconPath : undefined);
 }
 
 function createTray(iconPath?: string) {
   if (tray) return;
-  const icon = iconPath
-    ? nativeImage.createFromPath(iconPath)
-    : nativeImage.createEmpty();
+  const icon = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
   tray = new Tray(icon);
   tray.setToolTip("LabSwift");
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      {
-        label: "Show LabSwift",
-        click: () => {
-          mainWindow?.show();
-          mainWindow?.focus();
-        },
-      },
+      { label: "Show LabSwift", click: () => { mainWindow?.show(); mainWindow?.focus(); } },
       { type: "separator" },
-      {
-        label: "Quit LabSwift",
-        click: () => {
-          isQuitting = true;
-          app.quit();
-        },
-      },
+      { label: "Quit LabSwift", click: () => { isQuitting = true; app.quit(); } },
     ])
   );
-  tray.on("click", () => {
-    mainWindow?.show();
-    mainWindow?.focus();
-  });
+  tray.on("click", () => { mainWindow?.show(); mainWindow?.focus(); });
 }
 
 app.setAppUserModelId("com.labswift.app");
+
+process.on("uncaughtException", (err) => { console.error("[LabSwift] uncaughtException:", err); });
+process.on("unhandledRejection", (reason) => { console.error("[LabSwift] unhandledRejection:", reason); });
 
 app.whenReady().then(async () => {
   setupStore();
@@ -113,7 +95,11 @@ app.whenReady().then(async () => {
   if (role) {
     const port = role === "admin" ? 7890 : 7891;
     transferManager = new TransferManager(mainWindow!);
-    await startServer(port, transferManager, mainWindow!);
+    try {
+      await startServer(port, transferManager, mainWindow!);
+    } catch (err) {
+      console.error("[LabSwift] Failed to start server:", err);
+    }
     startDiscovery(role, port, mainWindow!);
   }
 
@@ -123,15 +109,12 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on("before-quit", () => {
-  isQuitting = true;
-});
+app.on("before-quit", () => { isQuitting = true; });
 
 app.on("window-all-closed", () => {
   if (isQuitting || process.platform !== "darwin") {
     stopDiscovery();
-    stopServer();
-    app.quit();
+    stopServer().finally(() => app.quit());
   }
 });
 
@@ -144,37 +127,39 @@ ipcMain.handle("window:maximize", () => {
 ipcMain.handle("window:close", () => mainWindow?.close());
 
 // ── Store ──
-ipcMain.handle("store:get", (_e, key: string) => {
-  return getStore().get(key);
-});
-ipcMain.handle("store:set", (_e, key: string, value: unknown) => {
-  getStore().set(key, value);
-});
-ipcMain.handle("store:delete", (_e, key: string) => {
-  getStore().delete(key);
+ipcMain.handle("store:get", (_e, key: string) => getStore().get(key));
+ipcMain.handle("store:set", (_e, key: string, value: unknown) => getStore().set(key, value));
+ipcMain.handle("store:delete", (_e, key: string) => getStore().delete(key));
+
+// ── Lock screen ──
+ipcMain.handle("lockScreen:verify", (_e, password: string) => {
+  const store = getStore();
+  const stored = store.get("adminPassword") as string | undefined;
+  if (!stored) return false;
+  return password === stored;
 });
 
 // ── Setup ──
-ipcMain.handle(
-  "setup:complete",
-  async (_e, role: "admin" | "client", password: string) => {
-    const store = getStore();
-    if (role === "admin") {
-      const bcrypt = await import("bcryptjs");
-      const hash = await bcrypt.hash(password, 10);
-      store.set("adminPasswordHash", hash);
-    }
-    store.set("adminPassword", password);
-    store.set("role", role);
-
-    const port = role === "admin" ? 7890 : 7891;
-    transferManager = new TransferManager(mainWindow!);
-    await startServer(port, transferManager, mainWindow!);
-    startDiscovery(role, port, mainWindow!);
-
-    return { success: true };
+ipcMain.handle("setup:complete", async (_e, role: "admin" | "client", password: string) => {
+  const store = getStore();
+  if (role === "admin") {
+    const bcrypt = await import("bcryptjs");
+    const hash = await bcrypt.hash(password, 10);
+    store.set("adminPasswordHash", hash);
   }
-);
+  store.set("adminPassword", password);
+  store.set("role", role);
+
+  const port = role === "admin" ? 7890 : 7891;
+  transferManager = new TransferManager(mainWindow!);
+  try {
+    await startServer(port, transferManager, mainWindow!);
+  } catch (err) {
+    console.error("[LabSwift] Failed to start server after setup:", err);
+  }
+  startDiscovery(role, port, mainWindow!);
+  return { success: true };
+});
 
 ipcMain.handle("setup:verifyAdmin", async (_e, password: string) => {
   const store = getStore();
@@ -184,10 +169,10 @@ ipcMain.handle("setup:verifyAdmin", async (_e, password: string) => {
   return bcrypt.compare(password, hash);
 });
 
-// ── Reset setup (lets admin/client re-run the first-time wizard) ──
+// ── Reset ──
 ipcMain.handle("setup:reset", async () => {
   stopDiscovery();
-  stopServer();
+  await stopServer();
   const store = getStore();
   store.delete("role");
   store.delete("adminPasswordHash");
@@ -199,19 +184,15 @@ ipcMain.handle("setup:reset", async () => {
   return { success: true };
 });
 
-// ── File selection ──
+// ── Dialogs ──
 ipcMain.handle("dialog:openFile", async () => {
-  const result = await dialog.showOpenDialog(mainWindow!, {
-    properties: ["openFile", "multiSelections"],
-  });
+  const result = await dialog.showOpenDialog(mainWindow!, { properties: ["openFile", "multiSelections"] });
   if (result.canceled) return [];
   return result.filePaths;
 });
 
 ipcMain.handle("dialog:openFolder", async () => {
-  const result = await dialog.showOpenDialog(mainWindow!, {
-    properties: ["openDirectory"],
-  });
+  const result = await dialog.showOpenDialog(mainWindow!, { properties: ["openDirectory"] });
   if (result.canceled) return null;
   return result.filePaths[0];
 });
@@ -226,39 +207,94 @@ ipcMain.handle("dialog:saveFolder", async () => {
 });
 
 // ── Transfers ──
-ipcMain.handle(
-  "transfer:send",
-  async (
-    _e,
-    targetIds: string[],
-    filePaths: string[],
-    adminPassword: string
-  ) => {
-    if (!transferManager) return { error: "Transfer manager not ready" };
-    return transferManager.sendFiles(targetIds, filePaths, adminPassword);
+ipcMain.handle("transfer:send", async (_e, targetIds: string[], filePaths: string[], adminPassword: string) => {
+  if (!transferManager) return { error: "Transfer manager not ready" };
+  return transferManager.sendFiles(targetIds, filePaths, adminPassword);
+});
+
+ipcMain.handle("transfer:sendFolder", async (_e, targetIds: string[], folderPath: string, adminPassword: string) => {
+  if (!transferManager) return { error: "Transfer manager not ready" };
+  if (!fs.existsSync(folderPath)) return { error: "Folder not found" };
+  if (!fs.statSync(folderPath).isDirectory()) return { error: "Path is not a folder" };
+
+  const folderName = path.basename(folderPath);
+  const tmpDir = path.join(os.tmpdir(), "labswift-zip");
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const zipPath = path.join(tmpDir, `${folderName}-${Date.now()}.zip`);
+
+  try {
+    const zip = new AdmZip();
+    zip.addLocalFolder(folderPath, folderName);
+    zip.writeZip(zipPath);
+  } catch (err) {
+    return { error: `Failed to zip folder: ${err}` };
   }
-);
 
-ipcMain.handle("transfer:list", () => {
-  return transferManager?.getTransfers() ?? [];
+  return transferManager.sendFolderZip(targetIds, zipPath, folderName, adminPassword);
 });
 
-ipcMain.handle("transfer:cancel", (_e, transferId: string) => {
-  transferManager?.cancelTransfer(transferId);
+ipcMain.handle("transfer:list", () => transferManager?.getTransfers() ?? []);
+ipcMain.handle("transfer:cancel", (_e, transferId: string) => transferManager?.cancelTransfer(transferId));
+ipcMain.handle("transfer:retry", (_e, transferId: string, adminPassword: string) => {
+  transferManager?.retryTransfer(transferId, adminPassword);
 });
 
+// ── Chat / Broadcast ──
+ipcMain.handle("chat:broadcast", async (_e, targetIds: string[], text: string, adminPassword: string) => {
+  const store = getStore();
+  const peers = (store.get("peers") as Peer[]) ?? [];
+  const pcName = (store.get("pcName") as string) || os.hostname();
+  const targets = peers.filter((p) => targetIds.includes(p.id) && p.online);
+  let sent = 0;
+
+  for (const peer of targets) {
+    try {
+      const res = await fetch(`http://${peer.host}:${peer.port}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-password": adminPassword },
+        body: JSON.stringify({ text, from: pcName, at: Date.now() }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) sent++;
+    } catch (err) {
+      console.error(`[LabSwift] chat send to ${peer.id} failed:`, err);
+    }
+  }
+
+  return { sent, total: targets.length };
+});
+
+// ── Remote save path push (admin → clients) ──
+// Admin picks a path on their side and pushes it to selected client PCs via HTTP.
+// Each client stores it locally so the folder persists after restart.
 ipcMain.handle(
-  "transfer:retry",
-  (_e, transferId: string, adminPassword: string) => {
-    transferManager?.retryTransfer(transferId, adminPassword);
+  "savePath:pushToClients",
+  async (_e, targetIds: string[], savePath: string, adminPassword: string) => {
+    const store = getStore();
+    const peers = (store.get("peers") as Peer[]) ?? [];
+    const targets = peers.filter((p) => targetIds.includes(p.id) && p.online);
+    let pushed = 0;
+
+    for (const peer of targets) {
+      try {
+        const res = await fetch(`http://${peer.host}:${peer.port}/set-save-path`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-admin-password": adminPassword },
+          body: JSON.stringify({ savePath }),
+          signal: AbortSignal.timeout(5000),
+        });
+        if (res.ok) pushed++;
+      } catch (err) {
+        console.error(`[LabSwift] savePath push to ${peer.id} failed:`, err);
+      }
+    }
+
+    return { pushed, total: targets.length };
   }
 );
 
 // ── Peers ──
-ipcMain.handle("peers:list", () => {
-  const store = getStore();
-  return store.get("peers") ?? [];
-});
+ipcMain.handle("peers:list", () => (getStore().get("peers") ?? []) as Peer[]);
 
 ipcMain.handle("peer:rename", (_e, peerId: string, name: string) => {
   const store = getStore();
@@ -268,26 +304,20 @@ ipcMain.handle("peer:rename", (_e, peerId: string, name: string) => {
   return updated;
 });
 
-ipcMain.handle(
-  "peer:setRow",
-  (_e, peerId: string, row: string, seat: string) => {
-    const store = getStore();
-    const peers = (store.get("peers") as Peer[]) ?? [];
-    const updated = peers.map((p) =>
-      p.id === peerId ? { ...p, row, seat } : p
-    );
-    store.set("peers", updated);
-    return updated;
-  }
-);
+ipcMain.handle("peer:setRow", (_e, peerId: string, row: string, seat: string) => {
+  const store = getStore();
+  const peers = (store.get("peers") as Peer[]) ?? [];
+  const updated = peers.map((p) => (p.id === peerId ? { ...p, row, seat } : p));
+  store.set("peers", updated);
+  return updated;
+});
 
-// ── Save path ──
+// ── Save path (local) ──
 ipcMain.handle("savePath:get", () => {
   const store = getStore();
-  return (
-    (store.get("savePath") as string) ||
-    app.getPath("downloads") + "/LabSwift"
-  );
+  const p = (store.get("savePath") as string) || path.join(app.getPath("downloads"), "LabSwift");
+  try { fs.mkdirSync(p, { recursive: true }); } catch { /* ignore */ }
+  return p;
 });
 
 ipcMain.handle("savePath:set", (_e, p: string) => {
@@ -295,20 +325,13 @@ ipcMain.handle("savePath:set", (_e, p: string) => {
   fs.mkdirSync(p, { recursive: true });
 });
 
-// ── Open folder ──
-ipcMain.handle("shell:openPath", (_e, p: string) => {
-  shell.openPath(p);
-});
+// ── Shell ──
+ipcMain.handle("shell:openPath", (_e, p: string) => { shell.openPath(p); });
 
 // ── Notification ──
-ipcMain.handle(
-  "notify",
-  (_e, title: string, body: string) => {
-    if (Notification.isSupported()) {
-      new Notification({ title, body }).show();
-    }
-  }
-);
+ipcMain.handle("notify", (_e, title: string, body: string) => {
+  if (Notification.isSupported()) new Notification({ title, body }).show();
+});
 
 export interface Peer {
   id: string;

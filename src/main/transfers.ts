@@ -28,6 +28,10 @@ export interface Transfer {
   startedAt: number;
   attempt?: number;
   maxAttempts?: number;
+  /** True when this transfer carries a zipped folder. */
+  isFolder?: boolean;
+  /** Original folder name shown in the UI (zip file has an internal name). */
+  originalFolderName?: string;
 }
 
 export class TransferManager {
@@ -53,7 +57,11 @@ export class TransferManager {
       id: transferId,
       fileName,
       filePath: savedPath,
-      fileSize: fs.existsSync(savedPath) ? fs.statSync(savedPath).size : 0,
+      fileSize: fs.existsSync(savedPath)
+        ? fs.statSync(savedPath).isDirectory()
+          ? this.getDirSize(savedPath)
+          : fs.statSync(savedPath).size
+        : 0,
       targetId: existing?.targetId ?? "admin",
       targetName: existing?.targetName ?? "Admin",
       direction: "incoming",
@@ -65,7 +73,6 @@ export class TransferManager {
     this.transfers.set(transferId, t);
     this.emit();
 
-    // Show OS notification even on locked screen
     if (Notification.isSupported()) {
       new Notification({
         title: "LabSwift — File Received",
@@ -74,11 +81,6 @@ export class TransferManager {
     }
   }
 
-  /**
-   * Called repeatedly while a file is streaming in on the /receive endpoint
-   * so the UI can show a live, real-time percentage for incoming transfers
-   * too (previously incoming files only ever appeared once 100% complete).
-   */
   updateIncomingProgress(
     transferId: string,
     fileName: string,
@@ -152,7 +154,6 @@ export class TransferManager {
         this.transfers.set(id, t);
         queued++;
 
-        // Send asynchronously
         this.sendFile(t, peer, adminPassword).catch(() => {});
       }
     }
@@ -161,7 +162,59 @@ export class TransferManager {
     return { queued };
   }
 
-  /** Re-queues a single failed/cancelled transfer for another attempt. */
+  /**
+   * Send a pre-zipped folder to the target peers.
+   * The zip was created in main.ts; we pass along the original folder name
+   * so the server side knows what to extract it as.
+   */
+  async sendFolderZip(
+    targetIds: string[],
+    zipPath: string,
+    originalFolderName: string,
+    adminPassword: string
+  ): Promise<{ queued: number }> {
+    const store = getStore();
+    const peers = (store.get("peers") as Peer[]) ?? [];
+
+    let queued = 0;
+    for (const targetId of targetIds) {
+      const peer = peers.find((p) => p.id === targetId);
+      if (!peer) continue;
+      if (!fs.existsSync(zipPath)) continue;
+
+      const id = `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const fileName = path.basename(zipPath);
+      const fileSize = fs.statSync(zipPath).size;
+
+      const t: Transfer = {
+        id,
+        fileName,
+        // Display the folder name in the UI, not the temp zip name
+        filePath: zipPath,
+        fileSize,
+        targetId,
+        targetName: peer.name,
+        direction: "outgoing",
+        status: "pending",
+        progress: 0,
+        startedAt: Date.now(),
+        attempt: 1,
+        maxAttempts: this.maxAttempts,
+        isFolder: true,
+        originalFolderName,
+      };
+      // Override fileName for UI display
+      t.fileName = `📁 ${originalFolderName}`;
+      this.transfers.set(id, t);
+      queued++;
+
+      this.sendFile(t, peer, adminPassword).catch(() => {});
+    }
+
+    this.emit();
+    return { queued };
+  }
+
   async retryTransfer(transferId: string, adminPassword: string): Promise<void> {
     const t = this.transfers.get(transferId);
     if (!t || t.direction !== "outgoing") return;
@@ -198,10 +251,20 @@ export class TransferManager {
         transfer.progress = 100;
         this.emit();
         this.updatePowerSaveBlocker();
+
+        // Clean up temp zip after successful folder transfer
+        if (transfer.isFolder && fs.existsSync(transfer.filePath)) {
+          try { fs.unlinkSync(transfer.filePath); } catch { /* ignore */ }
+        }
+
         return;
       } catch (err) {
         const current = this.transfers.get(transfer.id);
         if (current?.status === "cancelled") {
+          // Clean up temp zip on cancel
+          if (transfer.isFolder && fs.existsSync(transfer.filePath)) {
+            try { fs.unlinkSync(transfer.filePath); } catch { /* ignore */ }
+          }
           this.updatePowerSaveBlocker();
           return;
         }
@@ -215,8 +278,6 @@ export class TransferManager {
           return;
         }
 
-        // Wait with backoff before the next automatic retry, unless the
-        // user cancels while we're waiting.
         const delay = this.retryDelaysMs[attempt - 1] ?? 5000;
         await new Promise((resolve) => setTimeout(resolve, delay));
         const stillThere = this.transfers.get(transfer.id);
@@ -235,7 +296,8 @@ export class TransferManager {
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       const fileSize = transfer.fileSize;
-      const fileName = encodeURIComponent(transfer.fileName);
+      // Use the zip file's basename for the Content-Disposition filename
+      const fileName = encodeURIComponent(path.basename(transfer.filePath));
       const boundary = `----LabSwiftBoundary${Date.now()}`;
 
       const header = Buffer.from(
@@ -243,6 +305,12 @@ export class TransferManager {
       );
       const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
       const totalLength = header.length + fileSize + footer.length;
+
+      const extraHeaders: Record<string, string> = {};
+      if (transfer.isFolder && transfer.originalFolderName) {
+        extraHeaders["x-is-folder"] = "true";
+        extraHeaders["x-folder-name"] = encodeURIComponent(transfer.originalFolderName);
+      }
 
       const options: http.RequestOptions = {
         hostname: peer.host,
@@ -254,6 +322,7 @@ export class TransferManager {
           "Content-Length": totalLength,
           "x-admin-password": adminPassword,
           "x-transfer-id": transfer.id,
+          ...extraHeaders,
         },
         timeout: 300000,
       };
@@ -273,7 +342,6 @@ export class TransferManager {
         reject(new Error("Connection timed out"));
       });
 
-      // Check if cancelled
       const checkCancel = setInterval(() => {
         const t = this.transfers.get(transfer.id);
         if (t?.status === "cancelled") {
@@ -318,10 +386,6 @@ export class TransferManager {
     }
   }
 
-  /**
-   * Mirrors overall transfer progress onto the Windows taskbar icon, so
-   * progress stays visible even while the LabSwift window is minimized.
-   */
   private updateTaskbarProgress(all: Transfer[]) {
     if (this.win.isDestroyed()) return;
     const active = all.filter(
@@ -336,10 +400,6 @@ export class TransferManager {
     this.win.setProgressBar(Math.min(0.99, Math.max(0, avg)));
   }
 
-  /**
-   * Keeps the system from suspending the app while a transfer is actively
-   * in flight, so a long send isn't interrupted by the OS power plan.
-   */
   private updatePowerSaveBlocker() {
     const hasActive = Array.from(this.transfers.values()).some(
       (t) => t.status === "sending" || t.status === "retrying"
@@ -350,5 +410,18 @@ export class TransferManager {
       powerSaveBlocker.stop(this.powerSaveBlockerId);
       this.powerSaveBlockerId = null;
     }
+  }
+
+  /** Rough size of a directory (sum of all file sizes recursively). */
+  private getDirSize(dirPath: string): number {
+    let total = 0;
+    try {
+      for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+        const full = path.join(dirPath, entry.name);
+        if (entry.isDirectory()) total += this.getDirSize(full);
+        else if (entry.isFile()) total += fs.statSync(full).size;
+      }
+    } catch { /* ignore */ }
+    return total;
   }
 }
