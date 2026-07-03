@@ -36,6 +36,17 @@ declare global {
       listPeers: () => Promise<import("./lib/types").Peer[]>;
       renamePeer: (id: string, name: string) => Promise<import("./lib/types").Peer[]>;
       setPeerRow: (id: string, row: string, seat: string) => Promise<import("./lib/types").Peer[]>;
+      forgetPeer: (id: string) => Promise<import("./lib/types").Peer[]>;
+      // Remote lock / unlock
+      remoteLock: (targetIds: string[], adminPassword: string) => Promise<{ sent: number; total: number; errors: { peerId: string; reason: string }[] }>;
+      remoteUnlock: (targetIds: string[], adminPassword: string) => Promise<{ sent: number; total: number }>;
+      // Security settings
+      getSecuritySettings: () => Promise<{ extensionFilter: boolean; malwareScan: boolean }>;
+      setSecuritySettings: (settings: { extensionFilter?: boolean; malwareScan?: boolean }) => Promise<{ success: boolean }>;
+      // Threat / lock events
+      onThreatDetected: (cb: (info: { fileName: string; detail?: string }) => void) => () => void;
+      onLockEngage: (cb: () => void) => () => void;
+      onLockRelease: (cb: () => void) => () => void;
       // Save path (local)
       getSavePath: () => Promise<string>;
       setSavePath: (p: string) => Promise<void>;

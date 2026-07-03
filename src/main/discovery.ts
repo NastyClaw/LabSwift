@@ -97,6 +97,22 @@ function handleServiceUp(service: ServiceInstance, win: BrowserWindow) {
   const peers = (store.get("peers") as Peer[]) ?? [];
   const existing = peers.find((p) => p.id === id);
 
+  // Same host:port previously belonged to a *different* peer id. This is
+  // almost always the same physical machine re-announcing under a new
+  // identity (most commonly: it went through Setup → Reset → Setup again).
+  // Drop the stale record and stop polling it instead of ending up with two
+  // entries that both claim the same IP address.
+  const staleSameHost = peers.filter(
+    (p) => p.id !== id && p.host === host && p.port === port
+  );
+  for (const stale of staleSameHost) {
+    forgetPeer(stale.id);
+  }
+  const survivors =
+    staleSameHost.length > 0
+      ? peers.filter((p) => !staleSameHost.includes(p))
+      : peers;
+
   const updated: Peer = {
     id,
     name: existing?.name || pcName,
@@ -110,8 +126,8 @@ function handleServiceUp(service: ServiceInstance, win: BrowserWindow) {
   };
 
   const newPeers = existing
-    ? peers.map((p) => (p.id === id ? updated : p))
-    : [...peers, updated];
+    ? survivors.map((p) => (p.id === id ? updated : p))
+    : [...survivors, updated];
 
   store.set("peers", newPeers);
   win.webContents.send("peers:updated", newPeers);
@@ -165,8 +181,24 @@ function startHealthPoller(peer: Peer, win: BrowserWindow) {
 
   const timer = setInterval(async () => {
     try {
-      await pingPeer(peer.host, peer.port);
+      const health = await pingPeer(peer.host, peer.port);
       failCount = 0;
+
+      // Something is reachable at this host:port, but it's no longer the
+      // peer we started polling (e.g. it reset and got a new peerId while
+      // keeping the same IP). Retire this stale entry; the real peer — if
+      // it's still around — already has its own up-to-date entry from mDNS.
+      if (health.id && health.id !== peer.id) {
+        forgetPeer(peer.id);
+        const store = getStore();
+        const peers = (store.get("peers") as Peer[]) ?? [];
+        const newPeers = peers.filter((p) => p.id !== peer.id);
+        if (newPeers.length !== peers.length) {
+          store.set("peers", newPeers);
+          win.webContents.send("peers:updated", newPeers);
+        }
+        return;
+      }
 
       // Peer is reachable — ensure it's marked online and refresh lastSeen
       const store = getStore();
@@ -213,14 +245,27 @@ function startHealthPoller(peer: Peer, win: BrowserWindow) {
  * Fire a single GET /health at a peer and resolve/reject based on result.
  * Times out after 3 seconds so a dead peer doesn't stall the poller.
  */
-function pingPeer(host: string, port: number): Promise<void> {
+function pingPeer(host: string, port: number): Promise<{ id?: string }> {
   return new Promise((resolve, reject) => {
     const req = http.request(
       { hostname: host, port, path: "/health", method: "GET", timeout: 3000 },
       (res) => {
-        res.resume(); // consume response body to free socket
-        if (res.statusCode === 200) resolve();
-        else reject(new Error(`HTTP ${res.statusCode}`));
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        res.on("end", () => {
+          if (res.statusCode !== 200) {
+            reject(new Error(`HTTP ${res.statusCode}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(body) as { id?: string });
+          } catch {
+            resolve({});
+          }
+        });
       }
     );
     req.on("error", reject);
@@ -250,7 +295,7 @@ export function stopDiscovery() {
   browser = null;
 }
 
-function getPeerId(): string {
+export function getPeerId(): string {
   const store = getStore();
   let id = store.get("peerId") as string | undefined;
   if (!id) {
@@ -258,4 +303,17 @@ function getPeerId(): string {
     store.set("peerId", id);
   }
   return id;
+}
+
+/**
+ * Stop actively polling a peer. Used both when we detect a peer's identity
+ * has changed underneath an existing host:port (see handleServiceUp) and
+ * when the admin manually removes a stale entry from the Computers page.
+ */
+export function forgetPeer(id: string) {
+  const timer = healthPollers.get(id);
+  if (timer) {
+    clearInterval(timer);
+    healthPollers.delete(id);
+  }
 }

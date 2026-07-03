@@ -16,6 +16,10 @@ import {
   Users,
   MessageSquare,
   Upload,
+  Lock,
+  Unlock,
+  Shield,
+  Trash2,
 } from "lucide-react";
 import TitleBar from "../components/TitleBar";
 import TransferRow from "../components/TransferRow";
@@ -32,7 +36,15 @@ export default function AdminApp() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const [folderPaths, setFolderPaths] = useState<Set<string>>(new Set());
-  const [adminPassword, setAdminPassword] = useState("");
+
+  // ── Password split: livePassword is the ACTUAL credential used for every
+  // outgoing request.  settingsPassword is only what's typed in the Settings
+  // form — it doesn't change livePassword until Save Settings is clicked.
+  // This prevents a stray keystroke in the password field from silently
+  // invalidating all subsequent sends/broadcasts.
+  const [livePassword, setLivePassword] = useState("");
+  const [settingsPassword, setSettingsPassword] = useState("");
+
   const [sending, setSending] = useState(false);
   const [savePath, setSavePath] = useState("");
   const [pcName, setPcName] = useState("");
@@ -50,9 +62,15 @@ export default function AdminApp() {
   const [broadcastText, setBroadcastText] = useState("");
   const [broadcastTargetAll, setBroadcastTargetAll] = useState(true);
   const [broadcasting, setBroadcasting] = useState(false);
+  const [locking, setLocking] = useState(false);
   const [sentMessages, setSentMessages] = useState<
     { id: string; text: string; targets: number; sent: number; at: number }[]
   >([]);
+  // Security settings
+  const [extensionFilter, setExtensionFilter] = useState(true);
+  const [malwareScan, setMalwareScan] = useState(true);
+  const [savingSecuritySettings, setSavingSecuritySettings] = useState(false);
+
   const { showToast } = useToast();
 
   useEffect(() => {
@@ -60,14 +78,34 @@ export default function AdminApp() {
     window.labswift.listTransfers().then(setTransfers);
     window.labswift.getSavePath().then(setSavePath);
     window.labswift.storeGet("pcName").then((n) => setPcName((n as string) || ""));
-    window.labswift.storeGet("adminPassword").then((p) => { if (p) setAdminPassword(p as string); });
+    // Load the persisted password into BOTH slots on startup so the settings
+    // field shows the current value, but the live credential is always the
+    // one that's actually been saved to disk.
+    window.labswift.storeGet("adminPassword").then((p) => {
+      if (p) { setLivePassword(p as string); setSettingsPassword(p as string); }
+    });
     window.labswift.storeGet("minimizeToTray").then((v) => setMinimizeToTray(v !== false));
+    window.labswift.getSecuritySettings().then((s) => {
+      setExtensionFilter(s.extensionFilter);
+      setMalwareScan(s.malwareScan);
+    });
   }, []);
 
   useEffect(() => {
     const onPeers = (updated: Peer[]) => setPeers(updated);
     const onTransfers = (updated: Transfer[]) => setTransfers(updated);
-    const onReceived = (data: { fileName: string }) => showToast({ type: "success", title: "File Received", body: data.fileName });
+    const onReceived = (data: { fileName: string }) =>
+      showToast({ type: "success", title: "File Received", body: data.fileName });
+
+    // Threat notification from Windows Defender scan
+    const offThreat = window.labswift.onThreatDetected(({ fileName, detail }) => {
+      showToast({
+        type: "error",
+        title: "⚠ Threat Detected — File Rejected",
+        body: `${fileName}: ${detail ?? "Windows Defender flagged this file"}`,
+      });
+    });
+
     window.labswift.on("peers:updated", onPeers);
     window.labswift.on("transfers:updated", onTransfers);
     window.labswift.on("transfer:received", onReceived);
@@ -75,6 +113,7 @@ export default function AdminApp() {
       window.labswift.off("peers:updated", onPeers);
       window.labswift.off("transfers:updated", onTransfers);
       window.labswift.off("transfer:received", onReceived);
+      offThreat();
     };
   }, [showToast]);
 
@@ -112,7 +151,7 @@ export default function AdminApp() {
   const handleSend = async () => {
     if (selectedIds.size === 0) { showToast({ type: "error", title: "No PCs selected" }); return; }
     if (selectedFiles.length === 0) { showToast({ type: "error", title: "No files or folders selected" }); return; }
-    if (!adminPassword) { showToast({ type: "error", title: "Admin password not set" }); return; }
+    if (!livePassword) { showToast({ type: "error", title: "Admin password not set — save it in Settings first" }); return; }
     setSending(true);
     const targets = Array.from(selectedIds);
     let totalQueued = 0;
@@ -121,14 +160,14 @@ export default function AdminApp() {
     const plainFiles = selectedFiles.filter((f) => !folderPaths.has(f));
     if (plainFiles.length > 0) {
       try {
-        const result = await window.labswift.sendFiles(targets, plainFiles, adminPassword);
+        const result = await window.labswift.sendFiles(targets, plainFiles, livePassword);
         totalQueued += result.queued;
       } catch (e) { showToast({ type: "error", title: "Send failed", body: String(e) }); anyError = true; }
     }
 
     for (const fp of selectedFiles.filter((f) => folderPaths.has(f))) {
       try {
-        const result = await window.labswift.sendFolder(targets, fp, adminPassword);
+        const result = await window.labswift.sendFolder(targets, fp, livePassword);
         if ("error" in result) { showToast({ type: "error", title: "Folder send failed", body: result.error }); anyError = true; }
         else totalQueued += result.queued;
       } catch (e) { showToast({ type: "error", title: "Folder send failed", body: String(e) }); anyError = true; }
@@ -149,12 +188,12 @@ export default function AdminApp() {
 
   const handlePushSavePath = async () => {
     if (!remoteSavePath.trim()) { showToast({ type: "error", title: "Enter a path to push" }); return; }
-    if (!adminPassword) { showToast({ type: "error", title: "Admin password not set" }); return; }
+    if (!livePassword) { showToast({ type: "error", title: "Admin password not set — save it in Settings first" }); return; }
     const targetIds = pushTargetAll ? onlinePeers.map((p) => p.id) : Array.from(selectedIds);
     if (targetIds.length === 0) { showToast({ type: "error", title: "No online PCs to push to" }); return; }
     setPushingPath(true);
     try {
-      const result = await window.labswift.pushSavePathToClients(targetIds, remoteSavePath.trim(), adminPassword);
+      const result = await window.labswift.pushSavePathToClients(targetIds, remoteSavePath.trim(), livePassword);
       showToast({ type: "success", title: `Save path pushed to ${result.pushed}/${result.total} PCs`, body: remoteSavePath.trim() });
     } catch (e) {
       showToast({ type: "error", title: "Push failed", body: String(e) });
@@ -165,20 +204,20 @@ export default function AdminApp() {
   // ── Broadcast ──
   const handleBroadcast = async () => {
     if (!broadcastText.trim()) { showToast({ type: "error", title: "Message is empty" }); return; }
-    if (!adminPassword) { showToast({ type: "error", title: "Admin password not set" }); return; }
+    if (!livePassword) { showToast({ type: "error", title: "Admin password not set — save it in Settings first" }); return; }
     const targetIds = broadcastTargetAll ? onlinePeers.map((p) => p.id) : Array.from(selectedIds);
     if (targetIds.length === 0) { showToast({ type: "error", title: "No online PCs to send to" }); return; }
     setBroadcasting(true);
     try {
-      const result = await window.labswift.broadcastMessage(targetIds, broadcastText.trim(), adminPassword);
+      const result = await window.labswift.broadcastMessage(targetIds, broadcastText.trim(), livePassword);
       setSentMessages((prev) => [
         { id: Math.random().toString(36).slice(2), text: broadcastText.trim(), targets: result.total, sent: result.sent, at: Date.now() },
         ...prev.slice(0, 49),
       ]);
       if (result.sent === 0) {
-        showToast({ type: "error", title: `Message failed to send (0/${result.total} PCs)`, body: "Check the admin password matches on all client PCs." });
+        showToast({ type: "error", title: `Message failed (0/${result.total} PCs)`, body: "Password mismatch or all clients offline." });
       } else if (result.sent < result.total) {
-        showToast({ type: "info", title: `Message sent to ${result.sent}/${result.total} PCs`, body: "Some PCs failed — check console for details." });
+        showToast({ type: "info", title: `Message sent to ${result.sent}/${result.total} PCs`, body: "Some PCs failed — they may be offline." });
       } else {
         showToast({ type: "success", title: `Message sent to ${result.sent}/${result.total} PCs` });
       }
@@ -187,14 +226,32 @@ export default function AdminApp() {
     setBroadcasting(false);
   };
 
+  const handleLock = async () => {
+    if (!livePassword) { showToast({ type: "error", title: "Admin password not set" }); return; }
+    const targetIds = broadcastTargetAll ? onlinePeers.map((p) => p.id) : Array.from(selectedIds);
+    if (targetIds.length === 0) { showToast({ type: "error", title: "No online PCs selected" }); return; }
+    setLocking(true);
+    const result = await window.labswift.remoteLock(targetIds, livePassword);
+    showToast({ type: result.sent > 0 ? "success" : "error", title: `Lock sent to ${result.sent}/${result.total} PCs` });
+    setLocking(false);
+  };
+
+  const handleUnlock = async () => {
+    if (!livePassword) { showToast({ type: "error", title: "Admin password not set" }); return; }
+    const targetIds = broadcastTargetAll ? onlinePeers.map((p) => p.id) : Array.from(selectedIds);
+    if (targetIds.length === 0) { showToast({ type: "error", title: "No online PCs selected" }); return; }
+    const result = await window.labswift.remoteUnlock(targetIds, livePassword);
+    showToast({ type: result.sent > 0 ? "success" : "error", title: `Unlock sent to ${result.sent}/${result.total} PCs` });
+  };
+
   const cancelTransfer = async (id: string) => {
     await window.labswift.cancelTransfer(id);
     setTransfers(await window.labswift.listTransfers());
   };
 
   const retryTransfer = async (id: string) => {
-    if (!adminPassword) { showToast({ type: "error", title: "Admin password not set" }); return; }
-    await window.labswift.retryTransfer(id, adminPassword);
+    if (!livePassword) { showToast({ type: "error", title: "Admin password not set" }); return; }
+    await window.labswift.retryTransfer(id, livePassword);
     showToast({ type: "info", title: "Retrying transfer" });
   };
 
@@ -206,8 +263,19 @@ export default function AdminApp() {
 
   const saveSettings = async () => {
     if (pcName.trim()) await window.labswift.storeSet("pcName", pcName.trim());
-    if (adminPassword) await window.labswift.storeSet("adminPassword", adminPassword);
+    if (settingsPassword) {
+      await window.labswift.storeSet("adminPassword", settingsPassword);
+      // Only now promote the newly-saved password to the live credential
+      setLivePassword(settingsPassword);
+    }
     showToast({ type: "success", title: "Settings saved" });
+  };
+
+  const saveSecuritySettings = async () => {
+    setSavingSecuritySettings(true);
+    await window.labswift.setSecuritySettings({ extensionFilter, malwareScan });
+    setSavingSecuritySettings(false);
+    showToast({ type: "success", title: "Security settings saved" });
   };
 
   const pickSavePath = async () => {
@@ -224,6 +292,13 @@ export default function AdminApp() {
     setPeers(await window.labswift.listPeers());
     setEditPeer(null);
     showToast({ type: "success", title: "PC updated" });
+  };
+
+  const handleForgetPeer = async (peer: Peer) => {
+    if (!window.confirm(`Remove "${peer.name}" from the computers list?\n\nIt will re-appear automatically if it comes back online.`)) return;
+    const updated = await window.labswift.forgetPeer(peer.id);
+    setPeers(updated);
+    showToast({ type: "info", title: `${peer.name} removed` });
   };
 
   const doneCount = transfers.filter((t) => t.status === "done").length;
@@ -439,6 +514,30 @@ export default function AdminApp() {
                 </div>
               </div>
 
+              {/* Remote lock / unlock */}
+              <div className="card" style={{ maxWidth: 560 }}>
+                <div className="card-title"><Lock size={14} />Remote Screen Lock</div>
+                <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 14 }}>
+                  Instantly lock or unlock the screen on selected client PCs. Locked PCs show a full-screen overlay that only clears when you send Unlock or the student enters the lab password.
+                </div>
+                <div style={{ display: "flex", gap: 16, marginBottom: 14 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                    <input type="radio" checked={broadcastTargetAll} onChange={() => setBroadcastTargetAll(true)} />All online ({onlinePeers.length})
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                    <input type="radio" checked={!broadcastTargetAll} onChange={() => setBroadcastTargetAll(false)} />Selected ({selectedIds.size})
+                  </label>
+                </div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button className="btn btn-danger" style={{ flex: 1 }} onClick={handleLock} disabled={locking}>
+                    <Lock size={14} />{locking ? "Locking…" : "Lock Screens"}
+                  </button>
+                  <button className="btn btn-secondary" style={{ flex: 1 }} onClick={handleUnlock}>
+                    <Unlock size={14} />Unlock Screens
+                  </button>
+                </div>
+              </div>
+
               {/* Sent message log */}
               {sentMessages.length > 0 && (
                 <div className="card" style={{ maxWidth: 560 }}>
@@ -485,7 +584,17 @@ export default function AdminApp() {
                           <td><span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "var(--text-secondary)" }}>{peer.host}:{peer.port}</span></td>
                           <td>{peer.row && peer.seat ? <span>Row {peer.row}, Seat {peer.seat}</span> : <span style={{ color: "var(--text-muted)" }}>—</span>}</td>
                           <td><span className={`badge ${peer.online ? "badge-online" : "badge-offline"}`}><span className="dot" />{peer.online ? "Online" : "Offline"}</span></td>
-                          <td><button className="btn btn-sm btn-secondary" onClick={() => openEditModal(peer)}><Edit2 size={12} />Edit</button></td>
+                          <td>
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <button className="btn btn-sm btn-secondary" onClick={() => openEditModal(peer)}><Edit2 size={12} />Edit</button>
+                              <button
+                                className="btn btn-sm btn-danger"
+                                style={{ opacity: 0.7 }}
+                                title="Remove this PC from the list"
+                                onClick={() => handleForgetPeer(peer)}
+                              ><Trash2 size={12} /></button>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -523,8 +632,8 @@ export default function AdminApp() {
                   </div>
                   <div className="input-group">
                     <label className="input-label">Admin / Lab Password</label>
-                    <input className="input" type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="Change password" />
-                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Clients must use this password to accept incoming files and messages.</span>
+                    <input className="input" type="password" value={settingsPassword} onChange={(e) => setSettingsPassword(e.target.value)} placeholder="Change password" />
+                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Password is only applied when you click <strong>Save Settings</strong>.</span>
                   </div>
                   <div className="input-group">
                     <label className="input-label">Admin Save Folder (files received by this PC)</label>
@@ -549,6 +658,36 @@ export default function AdminApp() {
               <div className="card" style={{ maxWidth: 500 }}>
                 <div className="card-title">Appearance</div>
                 <ThemeSwitcher />
+              </div>
+
+              <div className="card" style={{ maxWidth: 500 }}>
+                <div className="card-title"><Shield size={14} />Security</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                  <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                    These settings apply to files received by <strong>all machines</strong> in the lab (both this admin PC and all clients). Changes take effect immediately — no restart needed.
+                  </div>
+                  <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer" }}>
+                    <input type="checkbox" style={{ marginTop: 2 }} checked={extensionFilter} onChange={(e) => setExtensionFilter(e.target.checked)} />
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>Block dangerous file types</div>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                        Rejects .exe, .bat, .cmd, .ps1, .vbs, .js, .lnk and other executable/script types. Uncheck only if you need to push installers.
+                      </div>
+                    </div>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer" }}>
+                    <input type="checkbox" style={{ marginTop: 2 }} checked={malwareScan} onChange={(e) => setMalwareScan(e.target.checked)} />
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>Scan received files with Windows Defender</div>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                        Runs a quick scan on each received file before saving it. Adds ~1–2 seconds. Requires Windows Defender to be installed (skipped silently if not available).
+                      </div>
+                    </div>
+                  </label>
+                  <button className="btn btn-primary" style={{ alignSelf: "flex-start" }} onClick={saveSecuritySettings} disabled={savingSecuritySettings}>
+                    <Shield size={13} />{savingSecuritySettings ? "Saving…" : "Save Security Settings"}
+                  </button>
+                </div>
               </div>
 
               <div className="card" style={{ maxWidth: 500 }}>

@@ -64,6 +64,37 @@ contextBridge.exposeInMainWorld("labswift", {
     ipcRenderer.invoke("peer:rename", id, name),
   setPeerRow: (id: string, row: string, seat: string) =>
     ipcRenderer.invoke("peer:setRow", id, row, seat),
+  forgetPeer: (id: string) => ipcRenderer.invoke("peer:forget", id),
+
+  // Remote lock / unlock
+  remoteLock: (targetIds: string[], adminPassword: string) =>
+    ipcRenderer.invoke("remote:lock", targetIds, adminPassword),
+  remoteUnlock: (targetIds: string[], adminPassword: string) =>
+    ipcRenderer.invoke("remote:unlock", targetIds, adminPassword),
+
+  // Security settings (extension filter, malware scan)
+  getSecuritySettings: () => ipcRenderer.invoke("security:getSettings"),
+  setSecuritySettings: (settings: { extensionFilter?: boolean; malwareScan?: boolean }) =>
+    ipcRenderer.invoke("security:setSettings", settings),
+
+  // Threat notification (server → renderer when Defender flags a file)
+  onThreatDetected: (cb: (info: { fileName: string; detail?: string }) => void) => {
+    const listener = (_e: unknown, info: { fileName: string; detail?: string }) => cb(info);
+    ipcRenderer.on("notify:threat", listener);
+    return () => ipcRenderer.removeListener("notify:threat", listener);
+  },
+
+  // Lock screen commands (pushed from admin via /lock and /unlock endpoints)
+  onLockEngage: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on("lock:engage", listener);
+    return () => ipcRenderer.removeListener("lock:engage", listener);
+  },
+  onLockRelease: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on("lock:release", listener);
+    return () => ipcRenderer.removeListener("lock:release", listener);
+  },
 
   // Save path (local)
   getSavePath: () => ipcRenderer.invoke("savePath:get"),

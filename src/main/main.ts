@@ -15,7 +15,7 @@ import os from "os";
 import AdmZip from "adm-zip";
 import { setupStore, getStore } from "./store";
 import { startServer, stopServer } from "./server";
-import { startDiscovery, stopDiscovery } from "./discovery";
+import { startDiscovery, stopDiscovery, forgetPeer } from "./discovery";
 import { TransferManager } from "./transfers";
 
 let mainWindow: BrowserWindow | null = null;
@@ -180,6 +180,8 @@ ipcMain.handle("setup:reset", async () => {
   store.delete("peers");
   store.delete("peerId");
   store.delete("pcName");
+  store.delete("savePath");
+  // Keep extensionFilter / malwareScan — these are admin policy, not per-machine identity
   transferManager = null;
   return { success: true };
 });
@@ -323,6 +325,78 @@ ipcMain.handle("peer:setRow", (_e, peerId: string, row: string, seat: string) =>
   const updated = peers.map((p) => (p.id === peerId ? { ...p, row, seat } : p));
   store.set("peers", updated);
   return updated;
+});
+
+// ── Peer management ──
+ipcMain.handle("peer:forget", (_e, peerId: string) => {
+  forgetPeer(peerId);
+  const store = getStore();
+  const peers = (store.get("peers") as Peer[]) ?? [];
+  const updated = peers.filter((p) => p.id !== peerId);
+  store.set("peers", updated);
+  mainWindow?.webContents.send("peers:updated", updated);
+  return updated;
+});
+
+// ── Remote lock / unlock (admin → clients) ──────────────────────────────────
+ipcMain.handle("remote:lock", async (_e, targetIds: string[], adminPassword: string) => {
+  const store = getStore();
+  const peers = (store.get("peers") as Peer[]) ?? [];
+  const targets = peers.filter((p) => targetIds.includes(p.id) && p.online);
+  let sent = 0;
+  const errors: { peerId: string; reason: string }[] = [];
+
+  for (const peer of targets) {
+    try {
+      const res = await fetch(`http://${peer.host}:${peer.port}/lock`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-password": adminPassword },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) sent++;
+      else errors.push({ peerId: peer.id, reason: `HTTP ${res.status}` });
+    } catch (err) {
+      errors.push({ peerId: peer.id, reason: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return { sent, total: targets.length, errors };
+});
+
+ipcMain.handle("remote:unlock", async (_e, targetIds: string[], adminPassword: string) => {
+  const store = getStore();
+  const peers = (store.get("peers") as Peer[]) ?? [];
+  const targets = peers.filter((p) => targetIds.includes(p.id) && p.online);
+  let sent = 0;
+
+  for (const peer of targets) {
+    try {
+      const res = await fetch(`http://${peer.host}:${peer.port}/unlock`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-password": adminPassword },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) sent++;
+    } catch { /* ignore */ }
+  }
+  return { sent, total: targets.length };
+});
+
+// ── Security settings ────────────────────────────────────────────────────────
+// These are stored in electron-store and read by server.ts on each request so
+// they take effect immediately without restarting the app.
+ipcMain.handle("security:getSettings", () => {
+  const store = getStore();
+  return {
+    extensionFilter: store.get("extensionFilter") !== false,
+    malwareScan: store.get("malwareScan") !== false,
+  };
+});
+
+ipcMain.handle("security:setSettings", (_e, settings: { extensionFilter?: boolean; malwareScan?: boolean }) => {
+  const store = getStore();
+  if (typeof settings.extensionFilter === "boolean") store.set("extensionFilter", settings.extensionFilter);
+  if (typeof settings.malwareScan === "boolean") store.set("malwareScan", settings.malwareScan);
+  return { success: true };
 });
 
 // ── Save path (local) ──

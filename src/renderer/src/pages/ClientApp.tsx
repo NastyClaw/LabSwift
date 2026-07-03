@@ -7,6 +7,7 @@ import {
   Bell,
   Wifi,
   MessageSquare,
+  Lock,
 } from "lucide-react";
 import TitleBar from "../components/TitleBar";
 import TransferRow from "../components/TransferRow";
@@ -26,6 +27,8 @@ export default function ClientApp() {
   const [notifications, setNotifications] = useState<{ id: string; fileName: string; time: number }[]>([]);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  // Remote lock state — when true, shows a fullscreen overlay the student can't dismiss
+  const [remotelyLocked, setRemotelyLocked] = useState(false);
   const { showToast } = useToast();
 
   useEffect(() => {
@@ -69,6 +72,14 @@ export default function ClientApp() {
       showToast({ type: "success", title: "Save folder updated by admin", body: newPath });
     });
 
+    // Remote lock / unlock pushed by admin
+    const removeLockListener = window.labswift.onLockEngage(() => {
+      setRemotelyLocked(true);
+    });
+    const removeUnlockListener = window.labswift.onLockRelease(() => {
+      setRemotelyLocked(false);
+    });
+
     window.labswift.on("transfers:updated", onTransfers);
     window.labswift.on("transfer:received", onReceived);
 
@@ -77,6 +88,8 @@ export default function ClientApp() {
       window.labswift.off("transfer:received", onReceived);
       removeChatListener();
       removeSavePathListener();
+      removeLockListener();
+      removeUnlockListener();
     };
   }, [showToast]);
 
@@ -107,6 +120,29 @@ export default function ClientApp() {
   return (
     <div className="app-shell">
       <TitleBar title="Client" role="client" />
+
+      {/* ── Remote lock overlay ─────────────────────────────────────────── */}
+      {remotelyLocked && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 9999,
+          background: "rgba(0,0,0,0.97)",
+          display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center",
+          gap: 24, userSelect: "none",
+        }}>
+          <div style={{ width: 80, height: 80, borderRadius: "50%", background: "var(--danger, #ef4444)22", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Lock size={40} color="var(--danger, #ef4444)" />
+          </div>
+          <div style={{ textAlign: "center", color: "#fff" }}>
+            <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>Screen Locked</div>
+            <div style={{ fontSize: 14, opacity: 0.6 }}>The lab administrator has locked this screen.</div>
+            <div style={{ fontSize: 13, opacity: 0.4, marginTop: 4 }}>Wait for the administrator to unlock, or enter the lab password below.</div>
+          </div>
+          {/* Allow student to self-unlock with the lab password */}
+          <UnlockForm onUnlock={() => setRemotelyLocked(false)} />
+        </div>
+      )}
+
       <div className="app-body">
         {/* Sidebar */}
         <nav className="sidebar">
@@ -304,3 +340,36 @@ export default function ClientApp() {
     </div>
   );
 }
+
+// ── Self-unlock form ────────────────────────────────────────────────────────
+// Lets a student dismiss the remote lock by entering the lab password.
+// This doesn't require a server round-trip — the password is already stored
+// locally (same value the client used during Setup).
+function UnlockForm({ onUnlock }: { onUnlock: () => void }) {
+  const [pw, setPw] = useState("");
+  const [error, setError] = useState("");
+
+  const attempt = async () => {
+    const ok = await window.labswift.verifyLockScreen(pw);
+    if (ok) { onUnlock(); }
+    else { setError("Incorrect password"); setPw(""); }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center" }}>
+      <input
+        className="input"
+        type="password"
+        placeholder="Enter lab password to unlock"
+        value={pw}
+        onChange={(e) => { setPw(e.target.value); setError(""); }}
+        onKeyDown={(e) => { if (e.key === "Enter") attempt(); }}
+        style={{ width: 280, background: "#ffffff15", border: "1px solid #ffffff30", color: "#fff" }}
+        autoFocus
+      />
+      {error && <div style={{ fontSize: 12, color: "var(--danger, #ef4444)" }}>{error}</div>}
+      <button className="btn btn-secondary" onClick={attempt} style={{ width: 280 }}>Unlock</button>
+    </div>
+  );
+}
+

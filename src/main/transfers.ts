@@ -3,6 +3,12 @@ import fs from "fs";
 import http from "http";
 import path from "path";
 import { getStore } from "./store";
+import {
+  MAX_FILE_SIZE_BYTES,
+  MAX_FILE_SIZE_MB,
+  DEFAULT_BLOCKED_EXTENSIONS,
+  getExtension,
+} from "./constants";
 import type { Peer } from "./main";
 
 export type TransferStatus =
@@ -125,6 +131,7 @@ export class TransferManager {
   ): Promise<{ queued: number }> {
     const store = getStore();
     const peers = (store.get("peers") as Peer[]) ?? [];
+    const extensionFilter = store.get("extensionFilter") !== false;
 
     let queued = 0;
     for (const targetId of targetIds) {
@@ -137,23 +144,31 @@ export class TransferManager {
         const fileName = path.basename(filePath);
         const fileSize = fs.statSync(filePath).size;
 
+        // ── Pre-send validation ─────────────────────────────────────────
+        // Validate locally before uploading so the admin gets instant
+        // feedback instead of waiting for a server-side 422 rejection.
+        const policyError = this.checkPolicy(fileName, fileSize, extensionFilter);
+        if (policyError) {
+          const failed: Transfer = {
+            id, fileName, filePath, fileSize, targetId,
+            targetName: peer.name, direction: "outgoing",
+            status: "failed", progress: 0,
+            error: policyError,
+            startedAt: Date.now(), attempt: 1, maxAttempts: this.maxAttempts,
+          };
+          this.transfers.set(id, failed);
+          queued++;
+          continue;
+        }
+
         const t: Transfer = {
-          id,
-          fileName,
-          filePath,
-          fileSize,
-          targetId,
-          targetName: peer.name,
-          direction: "outgoing",
-          status: "pending",
-          progress: 0,
-          startedAt: Date.now(),
-          attempt: 1,
-          maxAttempts: this.maxAttempts,
+          id, fileName, filePath, fileSize, targetId,
+          targetName: peer.name, direction: "outgoing",
+          status: "pending", progress: 0,
+          startedAt: Date.now(), attempt: 1, maxAttempts: this.maxAttempts,
         };
         this.transfers.set(id, t);
         queued++;
-
         this.sendFile(t, peer, adminPassword).catch(() => {});
       }
     }
@@ -269,6 +284,14 @@ export class TransferManager {
           return;
         }
 
+        // Policy/auth rejections are deterministic — retrying won't help.
+        // uploadFile already marked the transfer failed; just exit the loop.
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (errMsg.startsWith("__NO_RETRY__")) {
+          this.updatePowerSaveBlocker();
+          return;
+        }
+
         const isLastAttempt = attempt >= maxAttempts;
         if (isLastAttempt) {
           transfer.status = "failed";
@@ -331,8 +354,36 @@ export class TransferManager {
         let body = "";
         res.on("data", (chunk) => (body += chunk));
         res.on("end", () => {
-          if (res.statusCode === 200) resolve();
-          else reject(new Error(`HTTP ${res.statusCode}: ${body}`));
+          if (res.statusCode === 200) {
+            resolve();
+            return;
+          }
+          // Parse JSON error from server (policy rejections, auth failures, etc.)
+          // so the transfer row shows a clean message like "File type not allowed: .exe"
+          // instead of raw 'HTTP 422: {"error":"File type not allowed: .exe"}'.
+          let message = `HTTP ${res.statusCode}`;
+          try {
+            const parsed = JSON.parse(body) as { error?: string };
+            if (parsed.error) message = parsed.error;
+          } catch { /* body wasn't JSON — use status code */ }
+
+          // Policy rejections (422) and auth failures (403) are not retryable.
+          // Surface the error immediately by marking the transfer failed here
+          // rather than burning retry attempts on a deterministic rejection.
+          if (res.statusCode === 422 || res.statusCode === 403) {
+            const t = this.transfers.get(transfer.id);
+            if (t) {
+              t.status = "failed";
+              t.error = message;
+              // Set attempt to max so the retry loop exits after this
+              t.attempt = (t.maxAttempts ?? this.maxAttempts) + 1;
+              this.emit();
+            }
+            // Reject so the outer loop catches it, but the transfer is already marked
+            reject(new Error(`__NO_RETRY__${message}`));
+          } else {
+            reject(new Error(message));
+          }
         });
       });
 
@@ -423,5 +474,28 @@ export class TransferManager {
       }
     } catch { /* ignore */ }
     return total;
+  }
+
+  /**
+   * Client-side policy check mirroring server.ts's checkFilePolicy().
+   * Returns an error string if the file should be rejected, null if OK.
+   * Gives the admin instant feedback before wasting bandwidth uploading.
+   */
+  private checkPolicy(
+    fileName: string,
+    fileSize: number,
+    extensionFilter: boolean
+  ): string | null {
+    if (fileSize > MAX_FILE_SIZE_BYTES) {
+      const mb = (fileSize / (1024 * 1024)).toFixed(1);
+      return `File too large (${mb} MB — limit is ${MAX_FILE_SIZE_MB} MB)`;
+    }
+    if (extensionFilter) {
+      const ext = getExtension(fileName);
+      if (DEFAULT_BLOCKED_EXTENSIONS.includes(ext)) {
+        return `File type not allowed: ${ext || "(no extension)"}`;
+      }
+    }
+    return null;
   }
 }
