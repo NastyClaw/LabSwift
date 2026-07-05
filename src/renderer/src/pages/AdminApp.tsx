@@ -1,25 +1,8 @@
 import React, { useEffect, useState } from "react";
 import {
-  Monitor,
-  Send,
-  FolderOpen,
-  Folder,
-  Settings,
-  Activity,
-  CheckSquare,
-  Square,
-  RefreshCw,
-  Edit2,
-  LayoutGrid,
-  X,
-  Check,
-  Users,
-  MessageSquare,
-  Upload,
-  Lock,
-  Unlock,
-  Shield,
-  Trash2,
+  Monitor, Send, FolderOpen, Folder, Settings, Activity, CheckSquare, Square,
+  RefreshCw, Edit2, LayoutGrid, X, Check, Users, MessageSquare, Upload,
+  Lock, Unlock, Shield, Trash2, Download, Power, ArrowDownLeft, Globe,
 } from "lucide-react";
 import TitleBar from "../components/TitleBar";
 import TransferRow from "../components/TransferRow";
@@ -27,7 +10,7 @@ import ThemeSwitcher from "../components/ThemeSwitcher";
 import { Peer, Transfer } from "../lib/types";
 import { useToast } from "../lib/toast";
 
-type Page = "send" | "broadcast" | "computers" | "transfers" | "settings";
+type Page = "send" | "broadcast" | "computers" | "transfers" | "settings" | "log";
 
 export default function AdminApp() {
   const [page, setPage] = useState<Page>("send");
@@ -70,6 +53,25 @@ export default function AdminApp() {
   const [extensionFilter, setExtensionFilter] = useState(true);
   const [malwareScan, setMalwareScan] = useState(true);
   const [savingSecuritySettings, setSavingSecuritySettings] = useState(false);
+  // Work collection
+  const [collecting, setCollecting] = useState(false);
+  const [collectDest, setCollectDest] = useState("");
+  const [collectTargetAll, setCollectTargetAll] = useState(true);
+  // Open URL
+  const [urlInput, setUrlInput] = useState("");
+  const [urlTargetAll, setUrlTargetAll] = useState(true);
+  const [pushingUrl, setPushingUrl] = useState(false);
+  // Shutdown / Restart
+  const [shutdownTargetAll, setShutdownTargetAll] = useState(true);
+  const [shuttingDown, setShuttingDown] = useState(false);
+  const [pendingShutdown, setPendingShutdown] = useState<"shutdown" | "restart" | null>(null);
+  // Audit log
+  type LogEntry = { id: string; type: string; direction: string; from: string; fromIp: string; detail: string; at: number };
+  const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
+  // Approval requests from secondary admins
+  type ApprovalReq = { peerId: string; pcName: string; ip: string; port: number; at: number };
+  const [approvalRequests, setApprovalRequests] = useState<ApprovalReq[]>([]);
+  const [approvedAdmins, setApprovedAdmins] = useState<{ ip: string; port: number; token: string; approvedAt: number }[]>([]);
 
   const { showToast } = useToast();
 
@@ -89,6 +91,8 @@ export default function AdminApp() {
       setExtensionFilter(s.extensionFilter);
       setMalwareScan(s.malwareScan);
     });
+    window.labswift.getLog().then((entries) => setLogEntries(entries as LogEntry[]));
+    window.labswift.listApprovedAdmins().then(setApprovedAdmins);
   }, []);
 
   useEffect(() => {
@@ -99,11 +103,21 @@ export default function AdminApp() {
 
     // Threat notification from Windows Defender scan
     const offThreat = window.labswift.onThreatDetected(({ fileName, detail }) => {
-      showToast({
-        type: "error",
-        title: "⚠ Threat Detected — File Rejected",
-        body: `${fileName}: ${detail ?? "Windows Defender flagged this file"}`,
-      });
+      showToast({ type: "error", title: "⚠ Threat Detected — File Rejected", body: `${fileName}: ${detail ?? "Windows Defender flagged this file"}` });
+    });
+
+    // Audit log live updates
+    const offLog = window.labswift.onLogUpdated((entries) => setLogEntries(entries as LogEntry[]));
+
+    // Secondary admin approval requests
+    const offApproval = window.labswift.onApprovalRequest((req) => {
+      setApprovalRequests((prev) => [...prev.filter((r) => r.peerId !== req.peerId), { ...req, port: 7891 }]);
+      showToast({ type: "info", title: "Admin access request", body: `${req.pcName} (${req.ip}) wants admin access` });
+    });
+
+    // Approved admins list updated
+    const offApprovedList = window.labswift.onApprovedListUpdated((list) => {
+      setApprovedAdmins(list as { ip: string; port: number; token: string; approvedAt: number }[]);
     });
 
     window.labswift.on("peers:updated", onPeers);
@@ -114,6 +128,9 @@ export default function AdminApp() {
       window.labswift.off("transfers:updated", onTransfers);
       window.labswift.off("transfer:received", onReceived);
       offThreat();
+      offLog();
+      offApproval();
+      offApprovedList();
     };
   }, [showToast]);
 
@@ -301,6 +318,66 @@ export default function AdminApp() {
     showToast({ type: "info", title: `${peer.name} removed` });
   };
 
+  const handleCollect = async () => {
+    if (!livePassword) { showToast({ type: "error", title: "Admin password not set" }); return; }
+    const dest = collectDest || await window.labswift.saveFolder();
+    if (!dest) return;
+    if (!collectDest) setCollectDest(dest as string);
+    const targetIds = collectTargetAll ? onlinePeers.map((p) => p.id) : Array.from(selectedIds);
+    if (targetIds.length === 0) { showToast({ type: "error", title: "No online PCs selected" }); return; }
+    setCollecting(true);
+    const result = await window.labswift.collectWork(targetIds, dest as string, livePassword);
+    const ok = result.results.filter((r) => !r.error);
+    const failed = result.results.filter((r) => r.error);
+    showToast({ type: ok.length > 0 ? "success" : "error", title: `Collected from ${ok.length}/${result.results.length} PCs`, body: failed.length > 0 ? `${failed.length} failed` : `Saved to: ${result.destFolder}` });
+    if (ok.length > 0) window.labswift.openPath(result.destFolder);
+    setCollecting(false);
+  };
+
+  const handlePushUrl = async () => {
+    if (!urlInput.trim()) { showToast({ type: "error", title: "Enter a URL" }); return; }
+    if (!livePassword) { showToast({ type: "error", title: "Admin password not set" }); return; }
+    const targetIds = urlTargetAll ? onlinePeers.map((p) => p.id) : Array.from(selectedIds);
+    if (targetIds.length === 0) { showToast({ type: "error", title: "No online PCs" }); return; }
+    setPushingUrl(true);
+    const result = await window.labswift.pushUrl(targetIds, urlInput.trim(), livePassword);
+    showToast({ type: result.sent > 0 ? "success" : "error", title: `URL opened on ${result.sent}/${result.total} PCs` });
+    if (result.sent > 0) setUrlInput("");
+    setPushingUrl(false);
+  };
+
+  const handleShutdown = async (action: "shutdown" | "restart") => {
+    if (!livePassword) { showToast({ type: "error", title: "Admin password not set" }); return; }
+    const targetIds = shutdownTargetAll ? onlinePeers.map((p) => p.id) : Array.from(selectedIds);
+    if (targetIds.length === 0) { showToast({ type: "error", title: "No online PCs" }); return; }
+    if (!window.confirm(`Send 5-minute ${action} countdown to ${targetIds.length} PC(s)?`)) return;
+    setShuttingDown(true);
+    const result = await window.labswift.remoteShutdown(targetIds, action, livePassword);
+    setPendingShutdown(action);
+    showToast({ type: result.sent > 0 ? "success" : "error", title: `${action === "restart" ? "Restart" : "Shutdown"} sent to ${result.sent}/${result.total} PCs` });
+    setShuttingDown(false);
+  };
+
+  const handleCancelShutdown = async () => {
+    if (!livePassword) return;
+    const targetIds = shutdownTargetAll ? onlinePeers.map((p) => p.id) : Array.from(selectedIds);
+    await window.labswift.remoteCancelShutdown(targetIds, livePassword);
+    setPendingShutdown(null);
+    showToast({ type: "success", title: "Shutdown cancelled on all PCs" });
+  };
+
+  const handleApprove = async (req: ApprovalReq, approved: boolean) => {
+    await window.labswift.respondToAdminRequest(req.ip, req.port, approved);
+    setApprovalRequests((prev) => prev.filter((r) => r.peerId !== req.peerId));
+    showToast({ type: approved ? "success" : "info", title: approved ? `${req.pcName} approved as admin` : `${req.pcName} denied` });
+  };
+
+  const handleRevoke = async (ip: string) => {
+    if (!window.confirm("Revoke admin access for this machine?")) return;
+    await window.labswift.revokeAdminAccess(ip);
+    showToast({ type: "info", title: "Admin access revoked" });
+  };
+
   const doneCount = transfers.filter((t) => t.status === "done").length;
   const failCount = transfers.filter((t) => t.status === "failed").length;
   const sendingCount = transfers.filter((t) => t.status === "sending").length;
@@ -337,6 +414,14 @@ export default function AdminApp() {
           <div className="nav-section" style={{ marginTop: 8 }}>System</div>
           <button className={`nav-item ${page === "settings" ? "active" : ""}`} onClick={() => setPage("settings")}>
             <Settings size={16} />Settings
+          </button>
+          <button className={`nav-item ${page === "log" ? "active" : ""}`} onClick={() => setPage("log")} style={{ position: "relative" }}>
+            <Shield size={16} />Audit Log
+            {approvalRequests.length > 0 && (
+              <span style={{ marginLeft: "auto", background: "var(--danger, #ef4444)", color: "#fff", borderRadius: 10, padding: "1px 7px", fontSize: 10, fontWeight: 700 }}>
+                {approvalRequests.length}
+              </span>
+            )}
           </button>
 
           <div className="sidebar-footer">
@@ -538,6 +623,63 @@ export default function AdminApp() {
                 </div>
               </div>
 
+              {/* Open URL on student PCs */}
+              <div className="card" style={{ maxWidth: 560 }}>
+                <div className="card-title"><LayoutGrid size={14} />Open URL on Student PCs</div>
+                <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 12 }}>
+                  Instantly open a webpage on selected student computers — no student interaction needed.
+                </div>
+                <div style={{ display: "flex", gap: 16, marginBottom: 12 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                    <input type="radio" checked={urlTargetAll} onChange={() => setUrlTargetAll(true)} />All online ({onlinePeers.length})
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                    <input type="radio" checked={!urlTargetAll} onChange={() => setUrlTargetAll(false)} />Selected ({selectedIds.size})
+                  </label>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input className="input" value={urlInput} onChange={(e) => setUrlInput(e.target.value)} placeholder="https://example.com" style={{ flex: 1 }} onKeyDown={(e) => e.key === "Enter" && handlePushUrl()} />
+                  <button className="btn btn-primary" onClick={handlePushUrl} disabled={pushingUrl || !urlInput.trim()}>
+                    <Send size={13} />{pushingUrl ? "Sending…" : "Open"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Shutdown / Restart */}
+              <div className="card" style={{ maxWidth: 560 }}>
+                <div className="card-title"><Power size={14} />Shutdown / Restart</div>
+                <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 14 }}>
+                  Students get a 5-minute countdown with a save reminder before the PC powers off.
+                  You can cancel before the timer runs out.
+                </div>
+                <div style={{ display: "flex", gap: 16, marginBottom: 14 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                    <input type="radio" checked={shutdownTargetAll} onChange={() => setShutdownTargetAll(true)} />All online ({onlinePeers.length})
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                    <input type="radio" checked={!shutdownTargetAll} onChange={() => setShutdownTargetAll(false)} />Selected ({selectedIds.size})
+                  </label>
+                </div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button className="btn btn-danger" style={{ flex: 1 }} onClick={() => handleShutdown("shutdown")} disabled={shuttingDown || !!pendingShutdown}>
+                    <Power size={13} />Shutdown
+                  </button>
+                  <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => handleShutdown("restart")} disabled={shuttingDown || !!pendingShutdown}>
+                    <RefreshCw size={13} />Restart
+                  </button>
+                  {pendingShutdown && (
+                    <button className="btn btn-secondary" onClick={handleCancelShutdown}>
+                      <X size={13} />Cancel {pendingShutdown}
+                    </button>
+                  )}
+                </div>
+                {pendingShutdown && (
+                  <div style={{ marginTop: 10, fontSize: 12, color: "var(--warning, #f59e0b)", display: "flex", alignItems: "center", gap: 6 }}>
+                    <Activity size={12} />5-minute countdown is active on student PCs
+                  </div>
+                )}
+              </div>
+
               {/* Sent message log */}
               {sentMessages.length > 0 && (
                 <div className="card" style={{ maxWidth: 560 }}>
@@ -562,8 +704,34 @@ export default function AdminApp() {
           {page === "computers" && (
             <>
               <div className="page-header">
-                <div><div className="page-title">Computers</div><div className="page-sub">Manage lab PCs — rename, assign rows, monitor status.</div></div>
+                <div><div className="page-title">Computers</div><div className="page-sub">Manage lab PCs — rename, assign rows, collect student work.</div></div>
                 <button className="btn btn-secondary" onClick={() => window.labswift.listPeers().then(setPeers)}><RefreshCw size={14} />Refresh</button>
+              </div>
+
+              {/* Collect student work */}
+              <div className="card" style={{ maxWidth: 640 }}>
+                <div className="card-title"><ArrowDownLeft size={14} />Collect Student Work</div>
+                <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 12 }}>
+                  Pull files from each student's save folder directly to your machine. Files are scanned for threats on arrival.
+                  Each PC's work is saved in a separate subfolder named after their computer.
+                </div>
+                <div style={{ display: "flex", gap: 16, marginBottom: 12 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                    <input type="radio" checked={collectTargetAll} onChange={() => setCollectTargetAll(true)} />All online ({onlinePeers.length})
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                    <input type="radio" checked={!collectTargetAll} onChange={() => setCollectTargetAll(false)} />Selected ({selectedIds.size})
+                  </label>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                  <input className="input" value={collectDest} onChange={(e) => setCollectDest(e.target.value)} placeholder="Save to folder (click Browse or leave blank to pick)" style={{ flex: 1 }} />
+                  <button className="btn btn-secondary" onClick={async () => { const p = await window.labswift.saveFolder(); if (p) setCollectDest(p); }}>
+                    <FolderOpen size={13} />Browse
+                  </button>
+                </div>
+                <button className="btn btn-primary" onClick={handleCollect} disabled={collecting}>
+                  <Download size={13} />{collecting ? "Collecting…" : "Collect Work"}
+                </button>
               </div>
               {rows.length > 0 && (
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -700,6 +868,85 @@ export default function AdminApp() {
                     setTimeout(() => window.location.reload(), 200);
                   }}>Reset Setup</button>
                 </div>
+              </div>
+
+              {/* Approved secondary admins */}
+              <div className="card" style={{ maxWidth: 500 }}>
+                <div className="card-title"><Shield size={14} />Approved Admin Machines</div>
+                <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 12 }}>
+                  Other teacher PCs that have been granted admin access. Pending requests appear in the Audit Log page with Approve / Deny buttons.
+                </div>
+                {approvedAdmins.length === 0 ? (
+                  <div style={{ fontSize: 13, color: "var(--text-muted)", textAlign: "center", padding: 16 }}>No secondary admins approved yet.</div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {approvedAdmins.map((a) => (
+                      <div key={a.ip} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: "var(--bg-elevated)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                        <Shield size={13} color="var(--success)" />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13, color: "var(--text-primary)" }}>{a.ip}</div>
+                          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Approved {new Date(a.approvedAt).toLocaleDateString()}</div>
+                        </div>
+                        <button className="btn btn-sm btn-danger" style={{ opacity: 0.8 }} onClick={() => handleRevoke(a.ip)}>Revoke</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* ── LOG PAGE ── */}
+          {page === "log" && (
+            <>
+              <div className="page-header">
+                <div><div className="page-title">Audit Log</div><div className="page-sub">Who sent what, when, and from which machine.</div></div>
+                <button className="btn btn-secondary" onClick={() => window.labswift.clearLog().then(() => setLogEntries([]))}>Clear Log</button>
+              </div>
+
+              {/* Pending approval requests */}
+              {approvalRequests.length > 0 && (
+                <div className="card" style={{ borderLeft: "3px solid var(--accent)" }}>
+                  <div className="card-title"><Shield size={14} />Pending Admin Approval Requests</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {approvalRequests.map((req) => (
+                      <div key={req.peerId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "var(--bg-elevated)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                        <Shield size={14} color="var(--accent)" />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>{req.pcName}</div>
+                          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{req.ip} · {new Date(req.at).toLocaleTimeString()}</div>
+                        </div>
+                        <button className="btn btn-sm btn-primary" onClick={() => handleApprove(req, true)}><Check size={12} />Approve</button>
+                        <button className="btn btn-sm btn-danger" style={{ opacity: 0.8 }} onClick={() => handleApprove(req, false)}><X size={12} />Deny</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+                {logEntries.length === 0 ? (
+                  <div className="empty-state"><Shield size={36} /><div className="empty-state-title">No log entries yet</div><div className="empty-state-desc">File sends, collections, broadcasts and commands will appear here.</div></div>
+                ) : (
+                  <table className="table">
+                    <thead><tr><th>Time</th><th>Type</th><th>From</th><th>IP</th><th>Detail</th></tr></thead>
+                    <tbody>
+                      {logEntries.map((entry) => (
+                        <tr key={entry.id}>
+                          <td style={{ whiteSpace: "nowrap", fontSize: 12, color: "var(--text-muted)" }}>{new Date(entry.at).toLocaleString()}</td>
+                          <td>
+                            <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 99, background: entry.direction === "incoming" ? "var(--success-dim)" : "var(--accent-dim)", color: entry.direction === "incoming" ? "var(--success)" : "var(--accent)" }}>
+                              {entry.type}
+                            </span>
+                          </td>
+                          <td style={{ fontSize: 13 }}>{entry.from}</td>
+                          <td style={{ fontSize: 12, fontFamily: "monospace", color: "var(--text-muted)" }}>{entry.fromIp}</td>
+                          <td style={{ fontSize: 12, color: "var(--text-secondary)", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.detail}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </>
           )}

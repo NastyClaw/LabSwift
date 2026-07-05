@@ -100,6 +100,78 @@ contextBridge.exposeInMainWorld("labswift", {
   getSavePath: () => ipcRenderer.invoke("savePath:get"),
   setSavePath: (p: string) => ipcRenderer.invoke("savePath:set", p),
 
+  // Work collection (admin pulls from clients)
+  collectWork: (targetIds: string[], destFolder: string, adminPassword: string) =>
+    ipcRenderer.invoke("collection:pull", targetIds, destFolder, adminPassword),
+
+  // Open URL on client PCs
+  pushUrl: (targetIds: string[], url: string, adminPassword: string) =>
+    ipcRenderer.invoke("url:push", targetIds, url, adminPassword),
+  openUrlLocal: (url: string) => ipcRenderer.invoke("url:openLocal", url),
+  onOpenUrl: (cb: (url: string) => void) => {
+    const listener = (_e: unknown, url: string) => cb(url);
+    ipcRenderer.on("url:open", listener);
+    return () => ipcRenderer.removeListener("url:open", listener);
+  },
+
+  // Shutdown / Restart
+  remoteShutdown: (targetIds: string[], action: "shutdown" | "restart", adminPassword: string) =>
+    ipcRenderer.invoke("remote:shutdown", targetIds, action, adminPassword),
+  remoteCancelShutdown: (targetIds: string[], adminPassword: string) =>
+    ipcRenderer.invoke("remote:cancelShutdown", targetIds, adminPassword),
+  systemShutdown: (action: "shutdown" | "restart") =>
+    ipcRenderer.invoke("system:shutdown", action),
+  onShutdownCountdown: (cb: (data: { action: "shutdown" | "restart" }) => void) => {
+    const listener = (_e: unknown, data: { action: "shutdown" | "restart" }) => cb(data);
+    ipcRenderer.on("shutdown:countdown", listener);
+    return () => ipcRenderer.removeListener("shutdown:countdown", listener);
+  },
+  onShutdownCancel: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on("shutdown:cancel", listener);
+    return () => ipcRenderer.removeListener("shutdown:cancel", listener);
+  },
+
+  // Multi-admin approval
+  requestAdminApproval: (peerId: string, pcName: string) =>
+    ipcRenderer.invoke("admin:requestApproval", peerId, pcName),
+  respondToAdminRequest: (requesterIp: string, requesterPort: number, approved: boolean) =>
+    ipcRenderer.invoke("admin:respond", requesterIp, requesterPort, approved),
+  revokeAdminAccess: (ip: string) => ipcRenderer.invoke("admin:revoke", ip),
+  listApprovedAdmins: () => ipcRenderer.invoke("admin:listApproved"),
+  isAdminApproved: () => ipcRenderer.invoke("admin:isApproved"),
+  onApprovalRequest: (cb: (req: { peerId: string; pcName: string; ip: string; at: number }) => void) => {
+    const listener = (_e: unknown, req: { peerId: string; pcName: string; ip: string; at: number }) => cb(req);
+    ipcRenderer.on("admin:approvalRequest", listener);
+    return () => ipcRenderer.removeListener("admin:approvalRequest", listener);
+  },
+  onAdminApproved: (cb: (data: { token: string }) => void) => {
+    const listener = (_e: unknown, data: { token: string }) => cb(data);
+    ipcRenderer.on("admin:approved", listener);
+    return () => ipcRenderer.removeListener("admin:approved", listener);
+  },
+  onAdminDenied: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on("admin:denied", listener);
+    return () => ipcRenderer.removeListener("admin:denied", listener);
+  },
+  onApprovedListUpdated: (cb: (list: unknown[]) => void) => {
+    const listener = (_e: unknown, list: unknown[]) => cb(list);
+    ipcRenderer.on("admin:approvedListUpdated", listener);
+    return () => ipcRenderer.removeListener("admin:approvedListUpdated", listener);
+  },
+
+  // Audit log
+  getLog: () => ipcRenderer.invoke("log:get"),
+  clearLog: () => ipcRenderer.invoke("log:clear"),
+  addLogEntry: (entry: { type: string; direction: "incoming" | "outgoing"; from: string; fromIp: string; detail: string }) =>
+    ipcRenderer.invoke("log:addFromRenderer", entry),
+  onLogUpdated: (cb: (entries: unknown[]) => void) => {
+    const listener = (_e: unknown, entries: unknown[]) => cb(entries);
+    ipcRenderer.on("log:updated", listener);
+    return () => ipcRenderer.removeListener("log:updated", listener);
+  },
+
   // Shell
   openPath: (p: string) => ipcRenderer.invoke("shell:openPath", p),
 

@@ -50,6 +50,33 @@ declare global {
       // Save path (local)
       getSavePath: () => Promise<string>;
       setSavePath: (p: string) => Promise<void>;
+      // Work collection
+      collectWork: (targetIds: string[], destFolder: string, adminPassword: string) => Promise<{ results: { peerId: string; pcName: string; files: number; skipped: number; error?: string }[]; destFolder: string }>;
+      // Open URL
+      pushUrl: (targetIds: string[], url: string, adminPassword: string) => Promise<{ sent: number; total: number }>;
+      openUrlLocal: (url: string) => Promise<void>;
+      onOpenUrl: (cb: (url: string) => void) => () => void;
+      // Shutdown / Restart
+      remoteShutdown: (targetIds: string[], action: "shutdown" | "restart", adminPassword: string) => Promise<{ sent: number; total: number }>;
+      remoteCancelShutdown: (targetIds: string[], adminPassword: string) => Promise<{ sent: number; total: number }>;
+      systemShutdown: (action: "shutdown" | "restart") => Promise<void>;
+      onShutdownCountdown: (cb: (data: { action: "shutdown" | "restart" }) => void) => () => void;
+      onShutdownCancel: (cb: () => void) => () => void;
+      // Multi-admin approval
+      requestAdminApproval: (peerId: string, pcName: string) => Promise<{ success: boolean; error?: string; primaryName?: string }>;
+      respondToAdminRequest: (requesterIp: string, requesterPort: number, approved: boolean) => Promise<{ success: boolean }>;
+      revokeAdminAccess: (ip: string) => Promise<unknown[]>;
+      listApprovedAdmins: () => Promise<{ ip: string; port: number; token: string; approvedAt: number }[]>;
+      isAdminApproved: () => Promise<boolean>;
+      onApprovalRequest: (cb: (req: { peerId: string; pcName: string; ip: string; at: number }) => void) => () => void;
+      onAdminApproved: (cb: (data: { token: string }) => void) => () => void;
+      onAdminDenied: (cb: () => void) => () => void;
+      onApprovedListUpdated: (cb: (list: unknown[]) => void) => () => void;
+      // Audit log
+      getLog: () => Promise<{ id: string; type: string; direction: string; from: string; fromIp: string; detail: string; at: number }[]>;
+      clearLog: () => Promise<void>;
+      addLogEntry: (entry: { type: string; direction: "incoming" | "outgoing"; from: string; fromIp: string; detail: string }) => Promise<void>;
+      onLogUpdated: (cb: (entries: unknown[]) => void) => () => void;
       // Shell
       openPath: (p: string) => Promise<void>;
       // Notifications

@@ -335,6 +335,7 @@ export class TransferManager {
         extraHeaders["x-folder-name"] = encodeURIComponent(transfer.originalFolderName);
       }
 
+      const senderName = (getStore().get("pcName") as string) || require("os").hostname();
       const options: http.RequestOptions = {
         hostname: peer.host,
         port: peer.port,
@@ -345,6 +346,7 @@ export class TransferManager {
           "Content-Length": totalLength,
           "x-admin-password": adminPassword,
           "x-transfer-id": transfer.id,
+          "x-sender-name": senderName,
           ...extraHeaders,
         },
         timeout: 300000,

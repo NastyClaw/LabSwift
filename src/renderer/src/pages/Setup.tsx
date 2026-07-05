@@ -7,7 +7,7 @@ interface Props {
   onComplete: (role: "admin" | "client") => void;
 }
 
-type Step = "role" | "admin-key-check" | "password";
+type Step = "role" | "admin-key-check" | "password" | "awaiting-approval";
 
 export default function Setup({ onComplete }: Props) {
   const [step, setStep]                   = useState<Step>("role");
@@ -64,19 +64,60 @@ export default function Setup({ onComplete }: Props) {
 
   const handleFinish = async () => {
     setError("");
-    if (!password) {
-      setError("Password is required.");
-      return;
-    }
-    if (role === "admin" && password !== confirmPassword) {
-      setError("Passwords do not match.");
-      return;
-    }
-    if (pcName.trim()) {
-      await window.labswift.storeSet("pcName", pcName.trim());
-    }
+    if (!password) { setError("Password is required."); return; }
+    if (role === "admin" && password !== confirmPassword) { setError("Passwords do not match."); return; }
+    if (pcName.trim()) await window.labswift.storeSet("pcName", pcName.trim());
     setLoading(true);
     try {
+      // For admin role: check if this machine already has an approval token.
+      // First-ever admin on the network has no token yet and goes straight through.
+      // Secondary admins (on a network where an admin already exists) must be
+      // approved once by the primary admin — after that their token persists.
+      if (role === "admin") {
+        const alreadyApproved = await window.labswift.isAdminApproved();
+        if (!alreadyApproved) {
+          // Attempt to complete setup first (so the server is running and can
+          // receive the approval response when the primary calls back)
+          await window.labswift.setupComplete(role, password);
+
+          // Try to find a primary admin and send an approval request
+          const peerId = (await window.labswift.storeGet("peerId")) as string;
+          const thisName = pcName.trim() || "Unknown PC";
+          const reqResult = await window.labswift.requestAdminApproval(peerId, thisName);
+
+          if (!reqResult.success) {
+            // No primary admin reachable — this might be the first admin ever
+            // (no peers yet) or the primary is offline.
+            // If no adminPasswordHash exists yet in the network, we're the first — proceed.
+            const hasHash = await window.labswift.storeGet("adminPasswordHash");
+            if (!hasHash) {
+              // We ARE the first admin — no approval needed
+              onComplete(role);
+            } else {
+              setError(reqResult.error || "Could not reach any admin PC. Make sure the lab admin PC is on and LabSwift is open.");
+              setLoading(false);
+            }
+            return;
+          }
+
+          // Request sent — wait for the primary to approve/deny
+          setStep("awaiting-approval");
+          setLoading(false);
+
+          // Listen for the response
+          const offApproved = window.labswift.onAdminApproved(() => {
+            offApproved(); offDenied();
+            onComplete("admin");
+          });
+          const offDenied = window.labswift.onAdminDenied(() => {
+            offApproved(); offDenied();
+            setStep("password");
+            setError("Your admin request was denied. Contact the lab administrator.");
+          });
+          return;
+        }
+      }
+
       await window.labswift.setupComplete(role!, password);
       onComplete(role!);
     } catch {
@@ -110,12 +151,12 @@ export default function Setup({ onComplete }: Props) {
                 <div className={`role-card ${role === "admin" ? "selected" : ""}`} onClick={() => setRole("admin")}>
                   <Shield size={28} color="var(--accent)" />
                   <div className="role-card-title">Admin</div>
-                  <div className="role-card-desc">Admin/Distributor. This is the admin sends files to all PCs.</div>
+                  <div className="role-card-desc">Lab attendant. Sends files to all PCs.</div>
                 </div>
                 <div className={`role-card ${role === "client" ? "selected" : ""}`} onClick={() => setRole("client")}>
                   <Monitor size={28} color="var(--success)" />
                   <div className="role-card-title">Client</div>
-                  <div className="role-card-desc">Client/Receiver. Receives files from admin.</div>
+                  <div className="role-card-desc">Student PC. Receives files from admin.</div>
                 </div>
               </div>
 
@@ -223,6 +264,29 @@ export default function Setup({ onComplete }: Props) {
               </button>
             </>
           )}
+
+          {/* ── Step 3: Waiting for primary admin approval ── */}
+          {step === "awaiting-approval" && (
+            <>
+              <div className="setup-title">Waiting for Approval</div>
+              <div style={{ textAlign: "center", padding: "24px 0" }}>
+                <div style={{ width: 56, height: 56, borderRadius: "50%", background: "var(--accent-dim, #3b82f620)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", animation: "pulse 2s infinite" }}>
+                  <Key size={24} color="var(--accent, #3b82f6)" />
+                </div>
+                <div style={{ fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                  Your request has been sent to the lab admin PC.<br />
+                  <strong>Ask the lab administrator to approve your machine.</strong><br /><br />
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                    This window will update automatically when approved or denied.
+                  </span>
+                </div>
+              </div>
+              <button className="btn btn-secondary" style={{ width: "100%", justifyContent: "center" }} onClick={() => { setStep("password"); setError(""); }}>
+                ← Go back and try again
+              </button>
+            </>
+          )}
+
 
         </div>
       </div>

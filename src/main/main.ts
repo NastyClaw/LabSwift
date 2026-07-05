@@ -211,7 +211,12 @@ ipcMain.handle("dialog:saveFolder", async () => {
 // ── Transfers ──
 ipcMain.handle("transfer:send", async (_e, targetIds: string[], filePaths: string[], adminPassword: string) => {
   if (!transferManager) return { error: "Transfer manager not ready" };
-  return transferManager.sendFiles(targetIds, filePaths, adminPassword);
+  const pcName = (getStore().get("pcName") as string) || os.hostname();
+  const result = await transferManager.sendFiles(targetIds, filePaths, adminPassword);
+  for (const fp of filePaths) {
+    addAuditEntry({ type: "send", direction: "outgoing", from: pcName, fromIp: "localhost", detail: `Sent: ${path.basename(fp)} to ${targetIds.length} PC(s)` });
+  }
+  return result;
 });
 
 ipcMain.handle("transfer:sendFolder", async (_e, targetIds: string[], folderPath: string, adminPassword: string) => {
@@ -419,6 +424,258 @@ ipcMain.handle("shell:openPath", (_e, p: string) => { shell.openPath(p); });
 ipcMain.handle("notify", (_e, title: string, body: string) => {
   if (Notification.isSupported()) new Notification({ title, body }).show();
 });
+
+// ── Work Collection (admin pulls files from clients) ──────────────────────
+ipcMain.handle(
+  "collection:pull",
+  async (_e, targetIds: string[], destFolder: string, adminPassword: string) => {
+    const store = getStore();
+    const peers = (store.get("peers") as Peer[]) ?? [];
+    const targets = peers.filter((p) => targetIds.includes(p.id) && p.online);
+    const results: { peerId: string; pcName: string; files: number; skipped: number; error?: string }[] = [];
+
+    fs.mkdirSync(destFolder, { recursive: true });
+
+    for (const peer of targets) {
+      try {
+        const res = await fetch(`http://${peer.host}:${peer.port}/collect`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-admin-password": adminPassword },
+          signal: AbortSignal.timeout(30_000),
+        });
+
+        if (res.status === 204) {
+          results.push({ peerId: peer.id, pcName: peer.name, files: 0, skipped: 0 });
+          continue;
+        }
+
+        if (!res.ok) {
+          results.push({ peerId: peer.id, pcName: peer.name, files: 0, skipped: 0, error: `HTTP ${res.status}` });
+          continue;
+        }
+
+        const fileCount  = Number(res.headers.get("x-file-count") || 0);
+        const skipCount  = Number(res.headers.get("x-skipped-count") || 0);
+        const buffer     = Buffer.from(await res.arrayBuffer());
+        const pcDestDir  = path.join(destFolder, peer.name);
+        fs.mkdirSync(pcDestDir, { recursive: true });
+
+        const zip = new AdmZip(buffer);
+        zip.extractAllTo(pcDestDir, true);
+
+        // Audit log
+        addAuditEntry({
+          type: "collect", direction: "incoming",
+          from: peer.name, fromIp: peer.host,
+          detail: `Collected ${fileCount} file(s) from ${peer.name}`,
+        });
+
+        results.push({ peerId: peer.id, pcName: peer.name, files: fileCount, skipped: skipCount });
+      } catch (err) {
+        results.push({ peerId: peer.id, pcName: peer.name, files: 0, skipped: 0, error: String(err) });
+      }
+    }
+
+    return { results, destFolder };
+  }
+);
+
+// ── Open URL on client PCs ────────────────────────────────────────────────
+ipcMain.handle("url:push", async (_e, targetIds: string[], url: string, adminPassword: string) => {
+  const store  = getStore();
+  const peers  = (store.get("peers") as Peer[]) ?? [];
+  const pcName = (store.get("pcName") as string) || os.hostname();
+  const targets = peers.filter((p) => targetIds.includes(p.id) && p.online);
+  let sent = 0;
+
+  for (const peer of targets) {
+    try {
+      const res = await fetch(`http://${peer.host}:${peer.port}/open-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-password": adminPassword },
+        body: JSON.stringify({ url }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) sent++;
+    } catch { /* ignore */ }
+  }
+
+  addAuditEntry({ type: "url", direction: "outgoing", from: pcName, fromIp: "localhost", detail: `Pushed URL to ${sent}/${targets.length} PCs: ${url}` });
+  return { sent, total: targets.length };
+});
+
+// Admin: listen for URL open command from another admin (local shell open)
+ipcMain.handle("url:openLocal", (_e, url: string) => {
+  try { shell.openExternal(url); } catch { /* ignore */ }
+});
+
+// ── Remote Shutdown / Restart ──────────────────────────────────────────────
+ipcMain.handle("remote:shutdown", async (_e, targetIds: string[], action: "shutdown" | "restart", adminPassword: string) => {
+  const store  = getStore();
+  const peers  = (store.get("peers") as Peer[]) ?? [];
+  const pcName = (store.get("pcName") as string) || os.hostname();
+  const targets = peers.filter((p) => targetIds.includes(p.id) && p.online);
+  let sent = 0;
+
+  for (const peer of targets) {
+    try {
+      const res = await fetch(`http://${peer.host}:${peer.port}/shutdown`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-password": adminPassword },
+        body: JSON.stringify({ action }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) sent++;
+    } catch { /* ignore */ }
+  }
+
+  addAuditEntry({ type: action, direction: "outgoing", from: pcName, fromIp: "localhost", detail: `${action} sent to ${sent}/${targets.length} PCs` });
+  return { sent, total: targets.length };
+});
+
+ipcMain.handle("remote:cancelShutdown", async (_e, targetIds: string[], adminPassword: string) => {
+  const store  = getStore();
+  const peers  = (store.get("peers") as Peer[]) ?? [];
+  const targets = peers.filter((p) => targetIds.includes(p.id) && p.online);
+  let sent = 0;
+
+  for (const peer of targets) {
+    try {
+      const res = await fetch(`http://${peer.host}:${peer.port}/cancel-shutdown`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-password": adminPassword },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) sent++;
+    } catch { /* ignore */ }
+  }
+  return { sent, total: targets.length };
+});
+
+// Execute OS-level shutdown/restart — called by the client renderer when countdown hits zero
+ipcMain.handle("system:shutdown", (_e, action: "shutdown" | "restart") => {
+  const flag = action === "restart" ? "/r" : "/s";
+  const { exec } = require("child_process") as typeof import("child_process");
+  exec(`shutdown ${flag} /t 0 /f`, (err) => {
+    if (err) console.error("[LabSwift] shutdown exec failed:", err);
+  });
+});
+
+// ── Multi-admin approval system ────────────────────────────────────────────
+// Secondary admin → finds primary admin on network → sends request → waits
+ipcMain.handle("admin:requestApproval", async (_e, requesterPeerId: string, requesterPcName: string) => {
+  const store  = getStore();
+  const peers  = (store.get("peers") as Peer[]) ?? [];
+  const primaryAdmin = peers.find((p) => p.role === "admin" && p.online);
+
+  if (!primaryAdmin) {
+    return { success: false, error: "No admin PC found on the network. Make sure the lab admin PC is on and LabSwift is open." };
+  }
+
+  try {
+    const localIp = (() => {
+      const ifaces = os.networkInterfaces();
+      for (const iface of Object.values(ifaces)) {
+        for (const info of iface ?? []) {
+          if (info.family === "IPv4" && !info.internal) return info.address;
+        }
+      }
+      return "unknown";
+    })();
+
+    const res = await fetch(`http://${primaryAdmin.host}:${primaryAdmin.port}/admin-request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ peerId: requesterPeerId, pcName: requesterPcName, ip: localIp }),
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (res.ok) return { success: true, primaryName: primaryAdmin.name };
+    return { success: false, error: `Primary admin returned HTTP ${res.status}` };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+});
+
+// Primary admin → approves or denies a secondary admin request
+ipcMain.handle("admin:respond", async (_e, requesterIp: string, requesterPort: number, approved: boolean) => {
+  const token = approved ? `approved-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` : undefined;
+  try {
+    await fetch(`http://${requesterIp}:${requesterPort}/admin-respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved, token }),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (approved) {
+      // Record this approval on the primary so they can revoke later
+      const store = getStore();
+      const approvedAdmins = (store.get("approvedAdmins") as ApprovedAdmin[]) ?? [];
+      const exists = approvedAdmins.find((a) => a.ip === requesterIp);
+      if (!exists) {
+        approvedAdmins.push({ ip: requesterIp, port: requesterPort, token: token!, approvedAt: Date.now() });
+        store.set("approvedAdmins", approvedAdmins);
+        mainWindow?.webContents.send("admin:approvedListUpdated", approvedAdmins);
+      }
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+});
+
+// Primary admin → revoke a previously approved secondary admin
+ipcMain.handle("admin:revoke", (_e, ip: string) => {
+  const store = getStore();
+  const approvedAdmins = (store.get("approvedAdmins") as ApprovedAdmin[]) ?? [];
+  const updated = approvedAdmins.filter((a) => a.ip !== ip);
+  store.set("approvedAdmins", updated);
+  mainWindow?.webContents.send("admin:approvedListUpdated", updated);
+  return updated;
+});
+
+ipcMain.handle("admin:listApproved", () => {
+  return (getStore().get("approvedAdmins") as ApprovedAdmin[]) ?? [];
+});
+
+ipcMain.handle("admin:isApproved", () => {
+  const store = getStore();
+  return !!(store.get("approvedAdminToken") as string | undefined);
+});
+
+// ── Audit Log ──────────────────────────────────────────────────────────────
+export interface AuditEntry {
+  id: string;
+  type: string;
+  direction: "incoming" | "outgoing";
+  from: string;
+  fromIp: string;
+  detail: string;
+  at: number;
+}
+
+interface ApprovedAdmin {
+  ip: string;
+  port: number;
+  token: string;
+  approvedAt: number;
+}
+
+function addAuditEntry(entry: Omit<AuditEntry, "id" | "at">) {
+  const store = getStore();
+  const log = (store.get("auditLog") as AuditEntry[]) ?? [];
+  const newEntry: AuditEntry = { ...entry, id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, at: Date.now() };
+  const trimmed = [newEntry, ...log].slice(0, 500); // keep last 500 entries
+  store.set("auditLog", trimmed);
+  mainWindow?.webContents.send("log:updated", trimmed);
+}
+
+// Expose addAuditEntry so server.ts can call it via IPC from within electron
+ipcMain.handle("log:add", (_e, entry: Omit<AuditEntry, "id" | "at">) => { addAuditEntry(entry); });
+ipcMain.handle("log:addFromRenderer", (_e, entry: Omit<AuditEntry, "id" | "at">) => { addAuditEntry(entry); });
+ipcMain.handle("log:get", () => (getStore().get("auditLog") as AuditEntry[]) ?? []);
+ipcMain.handle("log:clear", () => { getStore().delete("auditLog"); mainWindow?.webContents.send("log:updated", []); });
 
 export interface Peer {
   id: string;

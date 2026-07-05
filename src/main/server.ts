@@ -387,9 +387,122 @@ export async function startServer(
         win.webContents.send("transfer:received", { id: transferId, fileName: displayName, savedPath });
         win.webContents.send("notify:received", displayName);
 
+        // Audit log — record who sent this file (IP from the request)
+        win.webContents.send("log:addEntry", {
+          type: "receive", direction: "incoming",
+          from: (req.headers["x-sender-name"] as string) || "Unknown",
+          fromIp: req.ip || "unknown",
+          detail: `Received: ${displayName}`,
+        });
+
         res.json({ success: true });
       }
     );
+
+    // ── Work collection (admin pulls from client) ────────────────────────
+    // Admin sends authenticated POST /collect → client zips its savePath
+    // directory and streams the zip back as a binary response.
+    expressApp.post("/collect", requireAuth, async (_req, res) => {
+      const savePath = resolveSavePath();
+      const files = fs.readdirSync(savePath).filter((f) => {
+        const full = path.join(savePath, f);
+        return fs.statSync(full).isFile();
+      });
+
+      if (files.length === 0) {
+        res.status(204).json({ message: "No files in save folder" });
+        return;
+      }
+
+      const zip = new AdmZip();
+      const skipped: string[] = [];
+      const store = getStore();
+      const extensionFilter = store.get("extensionFilter") !== false;
+
+      for (const file of files) {
+        if (extensionFilter && DEFAULT_BLOCKED_EXTENSIONS.includes(getExtension(file))) {
+          skipped.push(file);
+          continue;
+        }
+        zip.addLocalFile(path.join(savePath, file));
+      }
+
+      const buffer = zip.toBuffer();
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", "attachment; filename=collection.zip");
+      res.setHeader("x-skipped-count", String(skipped.length));
+      res.setHeader("x-file-count", String(files.length - skipped.length));
+      res.end(buffer);
+    });
+
+    // ── Open URL (admin pushes a URL to open on the client) ─────────────
+    expressApp.post("/open-url", requireAuth, (req, res) => {
+      const { url } = req.body as { url?: string };
+      if (!url || typeof url !== "string") {
+        res.status(400).json({ error: "url required" });
+        return;
+      }
+      // Validate URL before opening
+      try { new URL(url); } catch {
+        res.status(400).json({ error: "Invalid URL" });
+        return;
+      }
+      win.webContents.send("url:open", url);
+      res.json({ success: true });
+    });
+
+    // ── Shutdown / Restart (admin sends 5-min countdown) ─────────────────
+    expressApp.post("/shutdown", requireAuth, (req, res) => {
+      const { action } = req.body as { action?: "shutdown" | "restart" };
+      if (action !== "shutdown" && action !== "restart") {
+        res.status(400).json({ error: "action must be 'shutdown' or 'restart'" });
+        return;
+      }
+      win.webContents.send("shutdown:countdown", { action });
+      res.json({ success: true });
+    });
+
+    expressApp.post("/cancel-shutdown", requireAuth, (_req, res) => {
+      win.webContents.send("shutdown:cancel");
+      res.json({ success: true });
+    });
+
+    // ── Multi-admin approval ─────────────────────────────────────────────
+    // A secondary admin machine sends this request to the primary admin.
+    // No password required — this IS the authentication step.
+    // The primary admin manually approves or denies via their UI.
+    expressApp.post("/admin-request", (req, res) => {
+      const { peerId, pcName: requesterName, ip } = req.body as {
+        peerId?: string;
+        pcName?: string;
+        ip?: string;
+      };
+      if (!peerId || !requesterName) {
+        res.status(400).json({ error: "peerId and pcName required" });
+        return;
+      }
+      const requestIp = ip || req.ip || "unknown";
+      win.webContents.send("admin:approvalRequest", {
+        peerId,
+        pcName: requesterName,
+        ip: requestIp,
+        at: Date.now(),
+      });
+      res.json({ status: "pending" });
+    });
+
+    // Called by the primary admin back to the requester after approve/deny.
+    expressApp.post("/admin-respond", (req, res) => {
+      const { approved, token } = req.body as { approved: boolean; token?: string };
+      if (approved && token) {
+        const store = getStore();
+        store.set("approvedAdminToken", token);
+        win.webContents.send("admin:approved", { token });
+      } else {
+        win.webContents.send("admin:denied");
+      }
+      res.json({ success: true });
+    });
 
     // ── Resume support ──────────────────────────────────────────────────────
     expressApp.get("/resume/:transferId", (req, res) => {

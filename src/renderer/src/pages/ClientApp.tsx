@@ -1,19 +1,15 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import {
-  ArrowDownLeft,
-  FolderOpen,
-  Settings,
-  Activity,
-  Bell,
-  Wifi,
-  MessageSquare,
-  Lock,
+  ArrowDownLeft, FolderOpen, Settings, Activity,
+  Bell, Wifi, MessageSquare, Lock, Power, AlertTriangle,
 } from "lucide-react";
 import TitleBar from "../components/TitleBar";
 import TransferRow from "../components/TransferRow";
 import ThemeSwitcher from "../components/ThemeSwitcher";
 import { Transfer } from "../lib/types";
 import { useToast } from "../lib/toast";
+
+const SHUTDOWN_COUNTDOWN_SECONDS = 300; // 5 minutes — must match constants.ts
 
 type ChatMsg = { id: string; from: string; text: string; at: number };
 type Page = "receive" | "messages" | "transfers" | "settings";
@@ -29,6 +25,11 @@ export default function ClientApp() {
   const [unreadCount, setUnreadCount] = useState(0);
   // Remote lock state — when true, shows a fullscreen overlay the student can't dismiss
   const [remotelyLocked, setRemotelyLocked] = useState(false);
+  // Shutdown countdown
+  const [shutdownAction, setShutdownAction]   = useState<"shutdown" | "restart" | null>(null);
+  const [shutdownSecsLeft, setShutdownSecsLeft] = useState(SHUTDOWN_COUNTDOWN_SECONDS);
+  const [shutdownMinimised, setShutdownMinimised] = useState(false);
+  const shutdownTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const { showToast } = useToast();
 
   useEffect(() => {
@@ -73,11 +74,31 @@ export default function ClientApp() {
     });
 
     // Remote lock / unlock pushed by admin
-    const removeLockListener = window.labswift.onLockEngage(() => {
-      setRemotelyLocked(true);
+    const removeLockListener = window.labswift.onLockEngage(() => setRemotelyLocked(true));
+    const removeUnlockListener = window.labswift.onLockRelease(() => setRemotelyLocked(false));
+
+    // URL open pushed by admin
+    const removeUrlListener = window.labswift.onOpenUrl((url) => {
+      window.labswift.openUrlLocal(url);
+      showToast({ type: "info", title: "Opening URL", body: url });
     });
-    const removeUnlockListener = window.labswift.onLockRelease(() => {
-      setRemotelyLocked(false);
+
+    // Shutdown / restart countdown
+    const removeShutdownListener = window.labswift.onShutdownCountdown(({ action }) => {
+      setShutdownAction(action);
+      setShutdownSecsLeft(SHUTDOWN_COUNTDOWN_SECONDS);
+      setShutdownMinimised(false);
+    });
+    const removeCancelListener = window.labswift.onShutdownCancel(() => {
+      if (shutdownTimer.current) { clearInterval(shutdownTimer.current); shutdownTimer.current = null; }
+      setShutdownAction(null);
+      setShutdownSecsLeft(SHUTDOWN_COUNTDOWN_SECONDS);
+      showToast({ type: "success", title: "Shutdown cancelled by admin" });
+    });
+
+    // Audit log — forward log:addEntry events from server-side to IPC
+    window.labswift.on("log:addEntry", (entry: unknown) => {
+      window.labswift.addLogEntry(entry as { type: string; direction: "incoming" | "outgoing"; from: string; fromIp: string; detail: string });
     });
 
     window.labswift.on("transfers:updated", onTransfers);
@@ -90,8 +111,28 @@ export default function ClientApp() {
       removeSavePathListener();
       removeLockListener();
       removeUnlockListener();
+      removeUrlListener();
+      removeShutdownListener();
+      removeCancelListener();
     };
   }, [showToast]);
+
+  // Countdown tick — fires every second when a shutdown is pending
+  useEffect(() => {
+    if (!shutdownAction) return;
+    shutdownTimer.current = setInterval(() => {
+      setShutdownSecsLeft((s: number) => {
+        if (s <= 1) {
+          clearInterval(shutdownTimer.current!);
+          shutdownTimer.current = null;
+          window.labswift.systemShutdown(shutdownAction!);
+          return 0;
+        }
+        return s - 1;
+      });
+    }, 1000);
+    return () => { if (shutdownTimer.current) clearInterval(shutdownTimer.current); };
+  }, [shutdownAction]);
 
   const pickSavePath = async () => {
     const p = await window.labswift.saveFolder();
@@ -123,23 +164,52 @@ export default function ClientApp() {
 
       {/* ── Remote lock overlay ─────────────────────────────────────────── */}
       {remotelyLocked && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 9999,
-          background: "rgba(0,0,0,0.97)",
-          display: "flex", flexDirection: "column",
-          alignItems: "center", justifyContent: "center",
-          gap: 24, userSelect: "none",
-        }}>
-          <div style={{ width: 80, height: 80, borderRadius: "50%", background: "var(--danger, #ef4444)22", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <Lock size={40} color="var(--danger, #ef4444)" />
+        <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.97)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 24, userSelect: "none" }}>
+          <div style={{ width: 80, height: 80, borderRadius: "50%", background: "#ef444422", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Lock size={40} color="#ef4444" />
           </div>
           <div style={{ textAlign: "center", color: "#fff" }}>
             <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>Screen Locked</div>
             <div style={{ fontSize: 14, opacity: 0.6 }}>The lab administrator has locked this screen.</div>
-            <div style={{ fontSize: 13, opacity: 0.4, marginTop: 4 }}>Wait for the administrator to unlock, or enter the lab password below.</div>
           </div>
-          {/* Allow student to self-unlock with the lab password */}
           <UnlockForm onUnlock={() => setRemotelyLocked(false)} />
+        </div>
+      )}
+
+      {/* ── Shutdown overlay (full, dismissible to pill) ─────────────────── */}
+      {shutdownAction && !shutdownMinimised && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.92)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 20, userSelect: "none" }}>
+          <div style={{ width: 80, height: 80, borderRadius: "50%", background: "#f9731622", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Power size={40} color="#f97316" />
+          </div>
+          <div style={{ textAlign: "center", color: "#fff" }}>
+            <div style={{ fontSize: 22, fontWeight: 700 }}>{shutdownAction === "restart" ? "Restarting" : "Shutting Down"} in</div>
+            <div style={{ fontSize: 64, fontWeight: 900, fontFamily: "monospace", color: shutdownSecsLeft <= 60 ? "#ef4444" : "#f97316", lineHeight: 1.1 }}>
+              {String(Math.floor(shutdownSecsLeft / 60)).padStart(2, "0")}:{String(shutdownSecsLeft % 60).padStart(2, "0")}
+            </div>
+            <div style={{ fontSize: 14, opacity: 0.7, marginTop: 8 }}>Please save your work immediately.</div>
+          </div>
+          <button
+            onClick={() => setShutdownMinimised(true)}
+            style={{ marginTop: 8, background: "#ffffff20", border: "1px solid #ffffff30", color: "#fff", padding: "10px 28px", borderRadius: 8, cursor: "pointer", fontSize: 14 }}
+          >
+            Minimise — I'll save my work
+          </button>
+        </div>
+      )}
+
+      {/* ── Minimised pill (countdown persists at bottom of screen) ──────── */}
+      {shutdownAction && shutdownMinimised && (
+        <div
+          onClick={() => setShutdownMinimised(false)}
+          style={{ position: "fixed", bottom: 16, left: "50%", transform: "translateX(-50%)", zIndex: 9998, background: shutdownSecsLeft <= 60 ? "#ef4444" : "#f97316", color: "#fff", borderRadius: 999, padding: "8px 20px", display: "flex", alignItems: "center", gap: 10, cursor: "pointer", boxShadow: "0 4px 20px rgba(0,0,0,0.4)", userSelect: "none" }}
+        >
+          <AlertTriangle size={15} />
+          <span style={{ fontSize: 13, fontWeight: 700 }}>
+            {shutdownAction === "restart" ? "Restart" : "Shutdown"} in{" "}
+            {String(Math.floor(shutdownSecsLeft / 60)).padStart(2, "0")}:{String(shutdownSecsLeft % 60).padStart(2, "0")}
+          </span>
+          <span style={{ fontSize: 11, opacity: 0.8 }}>— click to expand</span>
         </div>
       )}
 

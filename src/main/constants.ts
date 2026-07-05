@@ -1,8 +1,11 @@
 // Shared policy constants used by both the sending side (transfers.ts) and
 // the receiving side (server.ts) so the two can never drift out of sync.
 
-export const MAX_FILE_SIZE_BYTES = 250 * 1024 * 1024; // 200MB
-export const MAX_FILE_SIZE_MB = 250;
+export const MAX_FILE_SIZE_BYTES = 200 * 1024 * 1024; // 200MB
+export const MAX_FILE_SIZE_MB = 200;
+
+/** Shutdown/restart countdown shown to students before the OS command fires. */
+export const SHUTDOWN_COUNTDOWN_SECONDS = 300; // 5 minutes
 
 // Extensions blocked by default for direct sends and inside zipped folder
 // transfers. This is a denylist of executable/script types most likely to
