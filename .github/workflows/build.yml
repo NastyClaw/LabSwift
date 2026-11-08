@@ -1,7 +1,6 @@
-name: Build Public LabSwift
+name: Build Electron App
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
